@@ -88,16 +88,10 @@ client.once('ready', () => {
     setInterval(cleanExpiredKeys, 60 * 60 * 1000);
 });
 
-function sendKeysLuaToChannel() {
-    const channel = client.channels.cache.get('1356653521272963203');
-    if (channel) {
-        channel.send({
-            content: 'Here is the updated keys.lua file:',
-            files: [DATA_FILE]
-        }).catch(err => console.error('Error sending keys.lua file:', err));
-    } else {
-        console.error('Channel not found.');
-    }
+async function sendKeysLuaToChannel() {
+    const channel = await client.channels.fetch('1356653521272963203').catch(console.error);
+    if (!channel) return console.error('Channel not found.');
+    channel.send({ content: 'Here is the updated keys.lua file:', files: [DATA_FILE] }).catch(err => console.error('Error sending keys.lua file:', err));
 }
 
 function parseLuaKeys(luaContent) {
