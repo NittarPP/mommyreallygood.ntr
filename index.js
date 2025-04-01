@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const { randomBytes } = require('node:crypto');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
-const express = require('express'); // Express for the HTTP server
 
 const configPath = path.resolve(__dirname, 'config.json');
 let config;
@@ -18,13 +17,8 @@ try {
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const DATA_FILE = path.resolve(__dirname, 'keys.lua');
-const PORT = 8080; // Port for the HTTP server
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.GuildMessages] });
-
-// Initialize Express server
-const app = express();
-app.use(express.json()); // Middleware to parse JSON data
 
 function loadData() {
     if (fs.existsSync(DATA_FILE)) {
@@ -64,17 +58,6 @@ function saveData(data) {
     fs.writeFileSync(DATA_FILE, luaContent);
 }
 
-// Express route to fetch all keys as JSON
-app.get('/keys', (req, res) => {
-    const data = loadData();
-    res.json(data); // Send data as JSON
-});
-
-// Start the HTTP server
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
-});
-
 function generateKey() {
     return `Photon-${randomBytes(8).toString('hex')}-${randomBytes(6).toString('hex')}`;
 }
@@ -98,13 +81,12 @@ function cleanExpiredKeys() {
     
     if (updated) {
         saveData(data);
-        console.log('Expired keys cleaned.');
     }
 }
 
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    setInterval(cleanExpiredKeys, 60 * 60 * 1000); // Clean expired keys every hour
+    setInterval(cleanExpiredKeys, 60 * 60 * 1000);
 });
 
 client.on('interactionCreate', async interaction => {
