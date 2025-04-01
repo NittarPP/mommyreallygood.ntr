@@ -88,6 +88,34 @@ client.once('ready', () => {
     setInterval(cleanExpiredKeys, 60 * 60 * 1000);
 });
 
+function sendKeysLuaToChannel() {
+    const channel = client.channels.cache.get('1356653521272963203');
+    if (channel) {
+        channel.send({
+            content: 'Here is the updated keys.lua file:',
+            files: [DATA_FILE]
+        }).catch(err => console.error('Error sending keys.lua file:', err));
+    } else {
+        console.error('Channel not found.');
+    }
+}
+
+function parseLuaKeys(luaContent) {
+    const keyRegex = /\["(.*?)"\] = {\s*userId = "(.*?)",\s*hwid = "(.*?)",\s*expiresAt = (\d+)\s*}/g;
+    let match;
+    let keys = {};
+
+    while ((match = keyRegex.exec(luaContent)) !== null) {
+        keys[match[1]] = {
+            userId: match[2],
+            hwid: match[3],
+            expiresAt: parseInt(match[4], 10)
+        };
+    }
+
+    return keys;
+}
+
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
@@ -117,6 +145,8 @@ client.on('interactionCreate', async interaction => {
         await interaction.user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
             .then(() => interaction.followUp({ content: 'Key sent to your DMs!', ephemeral: true }))
             .catch(() => interaction.followUp({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true }));
+    
+    sendKeysLuaToChannel();
     }
 
     // Handling `/del` command
@@ -140,6 +170,7 @@ client.on('interactionCreate', async interaction => {
         saveData(data);
 
         return interaction.reply({ content: `Key for user ${userIdToDelete} has been removed successfully.`, ephemeral: true });
+        sendKeysLuaToChannel();
     }
 
     // Handling `/checklist` command
@@ -165,44 +196,46 @@ client.on('interactionCreate', async interaction => {
 
     // Handling `/addkey` command (for privileged users with the specified role)
     if (interaction.commandName === 'addkey') {
-        const userRole = interaction.member.roles.cache.has('1349042694776819763'); // Check if the user has the required role
+        const userRole = interaction.member.roles.cache.has('1349042694776819763'); // Role check
 
         if (!userRole) {
-            return interaction.reply({ content: 'You do not have the necessary role to add a key.', ephemeral: true });
+            return interaction.reply({ content: 'You do not have the necessary role to add keys.', ephemeral: true });
         }
 
-        const userId = interaction.options.getString('userid');
-        const hwid = interaction.options.getString('hwid');
-
-        let data = loadData();
-
-        // Check if the user already has a key
-        for (const key in data) {
-            if (data[key].userId === userId) {
-                return interaction.reply({ content: 'This user already has a key in the database!', ephemeral: true });
-            }
-            if (data[key].hwid === hwid) {
-                return interaction.reply({ content: 'This HWID already has a key assigned!', ephemeral: true });
-            }
+        // Check for attached file
+        const attachment = interaction.options.getAttachment('file');
+        if (!attachment || !attachment.name.endsWith('.lua')) {
+            return interaction.reply({ content: 'Please attach a valid keys.lua file.', ephemeral: true });
         }
 
-        const key = generateKey();
-        const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours expiration time
-        data[key] = { userId, hwid, expiresAt };
-        saveData(data);
+        try {
+            // Fetch file contents
+            const response = await fetch(attachment.url);
+            const fileContent = await response.text();
 
-        // Send the generated key to the user via DM
-        const user = await client.users.fetch(userId);
-        if (user) {
-            await user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
-                .then(() => interaction.reply({ content: `Key has been generated and sent to ${user.tag}'s DMs.`, ephemeral: true }))
-                .catch(() => interaction.reply({ content: 'Failed to send DM to the user. Please ensure they have DMs enabled.', ephemeral: true }));
-        } else {
-            interaction.reply({ content: 'User not found, unable to send the key.', ephemeral: true });
+            let newKeys = parseLuaKeys(fileContent);
+            if (!newKeys) {
+                return interaction.reply({ content: 'Invalid keys.lua format.', ephemeral: true });
+            }
+
+            let data = loadData(); // Load current keys.lua data
+
+            for (const key in newKeys) {
+                if (!data[key]) { // Avoid duplicate keys
+                    data[key] = newKeys[key];
+                }
+            }
+
+            saveData(data); // Save updated keys.lua
+            sendKeysLuaToChannel(); // Send updated keys.lua to channel
+
+            return interaction.reply({ content: `Successfully added keys from keys.lua.`, ephemeral: true });
+        } catch (error) {
+            console.error('Error processing file:', error);
+            return interaction.reply({ content: 'Error reading the file. Ensure it is a valid keys.lua file.', ephemeral: true });
         }
     }
 });
-
 async function registerCommands() {
     const commands = [
         new SlashCommandBuilder()
@@ -226,15 +259,10 @@ async function registerCommands() {
             .setDescription('View all keys in the database'),
         new SlashCommandBuilder()
             .setName('addkey')
-            .setDescription('Generates a key for a user without using /getkey')
-            .addStringOption(option => 
-                option.setName('userid')
-                .setDescription('Enter the user ID')
-                .setRequired(true)
-            )
-            .addStringOption(option => 
-                option.setName('hwid')
-                .setDescription('Enter the user\'s HWID')
+            .setDescription('Upload a keys.lua file to add multiple keys at once')
+            .addAttachmentOption(option =>
+                option.setName('file')
+                .setDescription('Attach the keys.lua file')
                 .setRequired(true)
             )
     ].map(command => command.toJSON());
@@ -248,6 +276,7 @@ async function registerCommands() {
         console.error(error);
     }
 }
+
 
 registerCommands();
 
