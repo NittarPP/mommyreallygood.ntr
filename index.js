@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { randomBytes } = require('node:crypto');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const http = require('http');  // Import the http module
 
 const configPath = path.resolve(__dirname, 'config.json');
 let config;
@@ -143,4 +144,30 @@ async function registerCommands() {
 }
 
 registerCommands();
+
+// HTTP server to serve the keys.lua file
+const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/keys.lua') {
+        fs.readFile(DATA_FILE, 'utf8', (err, data) => {
+            if (err) {
+                res.statusCode = 500;
+                res.end('Error reading keys.lua file');
+                return;
+            }
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/x-lua');
+            res.end(data);
+        });
+    } else {
+        res.statusCode = 404;
+        res.end('Not Found');
+    }
+});
+
+// Set the server to listen on a specific port (e.g., port 8080)
+const PORT = 8080;
+server.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
+});
+
 client.login(TOKEN);
