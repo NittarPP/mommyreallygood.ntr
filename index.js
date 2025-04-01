@@ -162,9 +162,8 @@ client.on('interactionCreate', async interaction => {
         // Delete the key from the database
         delete data[keyToDelete];
         saveData(data);
-
-        return interaction.reply({ content: `Key for user ${userIdToDelete} has been removed successfully.`, ephemeral: true });
         sendKeysLuaToChannel();
+        return interaction.reply({ content: `Key for user ${userIdToDelete} has been removed successfully.`, ephemeral: true });
     }
 
     // Handling `/checklist` command
