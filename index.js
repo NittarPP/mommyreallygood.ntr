@@ -42,7 +42,6 @@ class KeyManager {
 
     async loadData() {
         try {
-            // First try to load from main file
             await fs.access(CONFIG.DATA_FILE);
             const content = (await fs.readFile(CONFIG.DATA_FILE, 'utf8')).trim();
             
@@ -106,7 +105,6 @@ class KeyManager {
             }
             console.log('Successfully loaded data from backup');
             
-            // Save the loaded backup to main file
             await this.saveData();
         } catch (error) {
             if (error.code === 'ENOENT') {
@@ -129,10 +127,7 @@ class KeyManager {
             }
             luaContent += '}\n';
             
-            // Save to main file
             await fs.writeFile(CONFIG.DATA_FILE, luaContent);
-            
-            // Create backup
             await fs.copyFile(CONFIG.DATA_FILE, CONFIG.BACKUP_FILE);
             console.log('Data saved and backup created');
         } catch (error) {
@@ -217,7 +212,7 @@ class KeyManager {
         
         while ((match = keyRegex.exec(luaContent)) !== null) {
             const key = match[1];
-            if (!this.data[key]) { // Avoid duplicates
+            if (!this.data[key]) {
                 this.data[key] = {
                     userId: match[2],
                     hwid: match[3],
@@ -237,7 +232,6 @@ class KeyManager {
 
 const keyManager = new KeyManager();
 
-// Utility functions
 function formatExpirationTime(timestamp) {
     return new Date(timestamp).toLocaleString();
 }
@@ -267,13 +261,14 @@ async function sendKeysLuaToChannel() {
     }
 }
 
-// Command handlers
 async function handleGetKey(interaction) {
     const hwid = interaction.options.getString('hwid');
     const userId = interaction.user.id;
 
     try {
-        await interaction.deferReply({ ephemeral: true });
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ ephemeral: true });
+        }
 
         const { key, expiresAt } = await keyManager.addKey(userId, hwid);
         
@@ -285,72 +280,64 @@ async function handleGetKey(interaction) {
 
         try {
             await interaction.user.send({ embeds: [dmEmbed] });
-            await interaction.editReply({ content: 'Your key has been sent to your DMs!', ephemeral: true });
+            await interaction.editReply({ content: 'Your key has been sent to your DMs!' });
         } catch (dmError) {
             await interaction.editReply({ 
-                content: 'Could not send you a DM. Please enable DMs and try again.', 
-                ephemeral: true 
+                content: 'Could not send you a DM. Please enable DMs and try again.'
             });
         }
 
         await sendKeysLuaToChannel();
     } catch (error) {
         await interaction.editReply({ 
-            content: `Error: ${error.message}`, 
-            ephemeral: true 
+            content: `Error: ${error.message}`
         });
     }
 }
 
 async function handleDeleteKey(interaction) {
     if (!interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
-        return interaction.reply({ 
-            content: '❌ You do not have permission to use this command.', 
+        return interaction.followUp({ 
+            content: '❌ You do not have permission to use this command.',
             ephemeral: true 
-        });
+        }).catch(console.error);
     }
 
     const userIdToDelete = interaction.options.getString('userid');
     
     try {
-        await interaction.deferReply({ ephemeral: true });
-        
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ ephemeral: true });
+        }
+
         const deleted = await keyManager.removeKey(userIdToDelete);
         if (!deleted) {
             return interaction.editReply({ 
-                content: `No key found for user ${userIdToDelete}.`, 
-                ephemeral: true 
+                content: `No key found for user ${userIdToDelete}.`
             });
         }
 
         await sendKeysLuaToChannel();
         await interaction.editReply({ 
-            content: `✅ Successfully removed key for user ${userIdToDelete}.`, 
-            ephemeral: true 
+            content: `✅ Successfully removed key for user ${userIdToDelete}.`
         });
     } catch (error) {
         await interaction.editReply({ 
-            content: `❌ Error: ${error.message}`, 
-            ephemeral: true 
+            content: `❌ Error: ${error.message}`
         });
     }
 }
 
 async function handleCheckList(interaction) {
-    if (!interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
-        return interaction.reply({ 
-            content: '❌ You do not have permission to use this command.', 
-            ephemeral: true 
-        });
-    }
     try {
-        await interaction.deferReply({ ephemeral: true });
-        
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ ephemeral: true });
+        }
+
         const keys = keyManager.getAllKeys();
         if (keys.length === 0) {
             return interaction.editReply({ 
-                content: 'No keys found in the database.', 
-                ephemeral: true 
+                content: 'No keys found in the database.'
             });
         }
 
@@ -359,7 +346,6 @@ async function handleCheckList(interaction) {
             `Total keys: ${keys.length}`
         );
 
-        // Split into multiple embeds if too many keys
         const chunks = [];
         let currentChunk = [];
         let charCount = 0;
@@ -381,45 +367,44 @@ async function handleCheckList(interaction) {
             chunks.push(currentChunk);
         }
 
-        // Send first embed
         embed.setDescription(chunks[0].join(''));
-        await interaction.editReply({ embeds: [embed], ephemeral: true });
+        await interaction.editReply({ embeds: [embed] });
 
-        // Send additional embeds if needed
         for (let i = 1; i < chunks.length; i++) {
             const extraEmbed = createEmbed(
                 'Current Keys (Continued)',
                 chunks[i].join('')
             );
-            await interaction.followUp({ embeds: [extraEmbed], ephemeral: true });
+            await interaction.followUp({ embeds: [extraEmbed] });
         }
     } catch (error) {
         await interaction.editReply({ 
-            content: `❌ Error: ${error.message}`, 
-            ephemeral: true 
+            content: `❌ Error: ${error.message}`
         });
     }
 }
 
 async function handleAddKey(interaction) {
     if (!interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
-        return interaction.reply({ 
-            content: '❌ You do not have permission to use this command.', 
+        return interaction.followUp({ 
+            content: '❌ You do not have permission to use this command.',
             ephemeral: true 
-        });
+        }).catch(console.error);
     }
 
     const attachment = interaction.options.getAttachment('file');
     if (!attachment || !attachment.name.endsWith('.lua')) {
-        return interaction.reply({ 
-            content: '❌ Please attach a valid .lua file.', 
+        return interaction.followUp({ 
+            content: '❌ Please attach a valid .lua file.',
             ephemeral: true 
-        });
+        }).catch(console.error);
     }
 
     try {
-        await interaction.deferReply({ ephemeral: true });
-        
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ ephemeral: true });
+        }
+
         const response = await fetch(attachment.url);
         if (!response.ok) throw new Error('Failed to download file');
         
@@ -429,22 +414,18 @@ async function handleAddKey(interaction) {
         await sendKeysLuaToChannel();
         
         await interaction.editReply({ 
-            content: `✅ Successfully imported ${importedKeys.length} keys.`, 
-            ephemeral: true 
+            content: `✅ Successfully imported ${importedKeys.length} keys.`
         });
     } catch (error) {
         await interaction.editReply({ 
-            content: `❌ Error: ${error.message}`, 
-            ephemeral: true 
+            content: `❌ Error: ${error.message}`
         });
     }
 }
 
-// Discord event handlers
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     
-    // Schedule regular cleanup
     setInterval(async () => {
         try {
             const count = await keyManager.cleanExpiredKeys();
@@ -457,7 +438,6 @@ client.once('ready', async () => {
         }
     }, CONFIG.CLEANUP_INTERVAL_MINUTES * 60 * 1000);
 
-    // Schedule regular backups
     setInterval(async () => {
         try {
             await keyManager.saveData();
@@ -470,7 +450,6 @@ client.once('ready', async () => {
 
 client.on('disconnect', (event) => {
     console.warn(`Disconnected: ${event.reason} (${event.code})`);
-    // Force save data before exiting
     keyManager.saveData().catch(console.error);
 });
 
@@ -480,7 +459,6 @@ client.on('reconnecting', () => {
 
 client.on('resume', (replayed) => {
     console.log(`Reconnected! Replayed ${replayed} events`);
-    // Reload data after reconnection
     keyManager.loadData().catch(console.error);
 });
 
@@ -492,6 +470,10 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
     try {
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ ephemeral: true });
+        }
+
         switch (interaction.commandName) {
             case 'getkey':
                 await handleGetKey(interaction);
@@ -506,28 +488,20 @@ client.on('interactionCreate', async interaction => {
                 await handleAddKey(interaction);
                 break;
             default:
-                await interaction.reply({ 
-                    content: 'Unknown command', 
+                await interaction.followUp({ 
+                    content: 'Unknown command',
                     ephemeral: true 
                 });
         }
     } catch (error) {
         console.error('Error handling interaction:', error);
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ 
-                content: '❌ An error occurred while processing your command.', 
-                ephemeral: true 
-            });
-        } else {
-            await interaction.followUp({ 
-                content: '❌ An error occurred while processing your command.', 
-                ephemeral: true 
-            });
-        }
+        await interaction.followUp({ 
+            content: '❌ An error occurred while processing your command.',
+            ephemeral: true 
+        }).catch(console.error);
     }
 });
 
-// Register slash commands
 async function registerCommands() {
     const commands = [
         new SlashCommandBuilder()
@@ -570,7 +544,6 @@ async function registerCommands() {
     }
 }
 
-// HTTP server for keepalive and key access
 function setupServer() {
     const server = http.createServer(async (req, res) => {
         try {
@@ -599,23 +572,20 @@ function setupServer() {
         console.log(`Server running on port ${CONFIG.SERVER_PORT}`);
     });
 
-    // Keepalive ping
     setInterval(() => {
         http.get(`http://localhost:${CONFIG.SERVER_PORT}/keepalive`, (res) => {
             console.log('Keepalive ping successful');
         }).on('error', (err) => {
             console.error('Keepalive ping failed:', err.message);
         });
-    }, 10 * 60 * 1000); // Every 10 minutes
+    }, 10 * 60 * 1000);
 }
 
-// Initialize
 async function initialize() {
     try {
         await registerCommands();
         setupServer();
         
-        // Handle process termination gracefully
         process.on('SIGINT', async () => {
             console.log('Shutting down gracefully...');
             await keyManager.saveData();
