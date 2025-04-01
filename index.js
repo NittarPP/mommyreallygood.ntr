@@ -1,310 +1,532 @@
 require('dotenv').config();
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 const { randomBytes } = require('node:crypto');
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const http = require('http');
+const cron = require('node-cron');
 
-const configPath = path.resolve(__dirname, 'config.json');
-let config;
+// Configuration
+const CONFIG = {
+    DATA_FILE: path.resolve(__dirname, 'keys.lua'),
+    ADMIN_ROLE_ID: '1349042694776819763',
+    KEY_CHANNEL_ID: '1356653521272963203',
+    KEY_PREFIX: 'Photon',
+    KEY_EXPIRATION_DAYS: 1,
+    SERVER_PORT: 8080,
+    CLEANUP_INTERVAL_MINUTES: 60
+};
 
-try {
-    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-} catch (error) {
-    console.error('Error reading config.json:', error);
+// Validate environment variables
+if (!process.env.TOKEN || !process.env.CLIENT_ID) {
+    console.error('Missing required environment variables (TOKEN, CLIENT_ID)');
     process.exit(1);
 }
 
-const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const DATA_FILE = path.resolve(__dirname, 'keys.lua');
+const client = new Client({ 
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.DirectMessages, 
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ] 
+});
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.GuildMessages] });
+class KeyManager {
+    constructor() {
+        this.data = {};
+        this.loadData();
+    }
 
-function loadData() {
-    if (fs.existsSync(DATA_FILE)) {
+    async loadData() {
         try {
-            const content = fs.readFileSync(DATA_FILE, 'utf8').trim();
-            if (!content.startsWith('return {')) return {};
+            await fs.access(CONFIG.DATA_FILE);
+            const content = (await fs.readFile(CONFIG.DATA_FILE, 'utf8')).trim();
+            
+            if (!content.startsWith('return {')) {
+                console.warn('Invalid keys.lua format, initializing empty database');
+                this.data = {};
+                return;
+            }
 
-            const data = {};
             const keyRegex = /\["(.*?)"\] = {\s*userId = "(.*?)",\s*hwid = "(.*?)",\s*expiresAt = (\d+)\s*}/g;
             let match;
+            this.data = {};
             
             while ((match = keyRegex.exec(content)) !== null) {
-                data[match[1]] = {
+                this.data[match[1]] = {
                     userId: match[2],
                     hwid: match[3],
                     expiresAt: parseInt(match[4], 10)
                 };
             }
-
-            return data;
         } catch (error) {
-            console.error("Error parsing keys.lua, resetting data:", error);
-            return {};
+            if (error.code === 'ENOENT') {
+                console.log('No keys.lua file found, creating new one');
+                this.data = {};
+                await this.saveData();
+            } else {
+                console.error('Error loading keys data:', error);
+            }
         }
     }
-    return {};
-}
 
-function saveData(data) {
-    let luaContent = 'return {\n';
-    for (const key in data) {
-        const entry = data[key];
-        luaContent += `    ["${key}"] = {\n        userId = "${entry.userId}",\n        hwid = "${entry.hwid}",\n        expiresAt = ${entry.expiresAt}\n    },\n`;
+    async saveData() {
+        try {
+            let luaContent = 'return {\n';
+            for (const [key, entry] of Object.entries(this.data)) {
+                luaContent += `    ["${key}"] = {\n        userId = "${entry.userId}",\n        hwid = "${entry.hwid}",\n        expiresAt = ${entry.expiresAt}\n    },\n`;
+            }
+            luaContent += '}\n';
+            await fs.writeFile(CONFIG.DATA_FILE, luaContent);
+        } catch (error) {
+            console.error('Error saving keys data:', error);
+            throw error;
+        }
     }
-    luaContent += '}\n';
-    fs.writeFileSync(DATA_FILE, luaContent);
+
+    generateKey() {
+        const randomPart1 = randomBytes(8).toString('hex');
+        const randomPart2 = randomBytes(6).toString('hex');
+        return `${CONFIG.KEY_PREFIX}-${randomPart1}-${randomPart2}`;
+    }
+
+    async addKey(userId, hwid) {
+        if (this.getKeyByUserId(userId)) {
+            throw new Error('User already has a key');
+        }
+
+        if (this.getKeyByHwid(hwid)) {
+            throw new Error('HWID already has a key assigned');
+        }
+
+        const key = this.generateKey();
+        const expiresAt = Date.now() + (CONFIG.KEY_EXPIRATION_DAYS * 24 * 60 * 60 * 1000);
+        
+        this.data[key] = { userId, hwid, expiresAt };
+        await this.saveData();
+        
+        return { key, expiresAt };
+    }
+
+    async removeKey(userId) {
+        const key = this.getKeyByUserId(userId);
+        if (!key) return false;
+
+        delete this.data[key];
+        await this.saveData();
+        return true;
+    }
+
+    getKeyByUserId(userId) {
+        return Object.keys(this.data).find(key => this.data[key].userId === userId);
+    }
+
+    getKeyByHwid(hwid) {
+        return Object.keys(this.data).find(key => this.data[key].hwid === hwid);
+    }
+
+    getAllKeys() {
+        return Object.entries(this.data).map(([key, value]) => ({
+            key,
+            userId: value.userId,
+            hwid: value.hwid,
+            expiresAt: value.expiresAt
+        }));
+    }
+
+    async cleanExpiredKeys() {
+        const now = Date.now();
+        let count = 0;
+
+        for (const [key, entry] of Object.entries(this.data)) {
+            if (entry.expiresAt && now >= entry.expiresAt) {
+                delete this.data[key];
+                count++;
+            }
+        }
+
+        if (count > 0) {
+            await this.saveData();
+            console.log(`Cleaned up ${count} expired keys`);
+        }
+
+        return count;
+    }
+
+    async importFromLua(luaContent) {
+        const keyRegex = /\["(.*?)"\] = {\s*userId = "(.*?)",\s*hwid = "(.*?)",\s*expiresAt = (\d+)\s*}/g;
+        let match;
+        const importedKeys = [];
+        
+        while ((match = keyRegex.exec(luaContent)) !== null) {
+            const key = match[1];
+            if (!this.data[key]) { // Avoid duplicates
+                this.data[key] = {
+                    userId: match[2],
+                    hwid: match[3],
+                    expiresAt: parseInt(match[4], 10)
+                };
+                importedKeys.push(key);
+            }
+        }
+
+        if (importedKeys.length > 0) {
+            await this.saveData();
+        }
+
+        return importedKeys;
+    }
 }
 
-function generateKey() {
-    return `Photon-${randomBytes(8).toString('hex')}-${randomBytes(6).toString('hex')}`;
-}
+const keyManager = new KeyManager();
 
+// Utility functions
 function formatExpirationTime(timestamp) {
     return new Date(timestamp).toLocaleString();
 }
 
-function cleanExpiredKeys() {
-    let data = loadData();
-    const now = Date.now();
-    let updated = false;
-    
-    for (const key in data) {
-        if (data[key].expiresAt && now >= data[key].expiresAt) {
-            delete data[key];
-            updated = true;
-        }
-    }
-    
-    if (updated) {
-        saveData(data);
-    }
+function createEmbed(title, description, color = 0x0099FF) {
+    return new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(description)
+        .setColor(color)
+        .setTimestamp();
 }
-
-client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}!`);
-    setInterval(cleanExpiredKeys, 60 * 60 * 1000);
-});
 
 async function sendKeysLuaToChannel() {
-    const channel = await client.channels.fetch('1356653521272963203').catch(console.error);
-    if (!channel) return console.error('Channel not found.');
-    channel.send({ content: 'Here is the updated keys.lua file:', files: [DATA_FILE] }).catch(err => console.error('Error sending keys.lua file:', err));
+    try {
+        const channel = await client.channels.fetch(CONFIG.KEY_CHANNEL_ID);
+        if (!channel) {
+            console.error('Key channel not found');
+            return;
+        }
+        
+        await channel.send({
+            content: 'Here is the updated keys.lua file:',
+            files: [CONFIG.DATA_FILE]
+        });
+    } catch (error) {
+        console.error('Error sending keys.lua file:', error);
+    }
 }
 
-function parseLuaKeys(luaContent) {
-    const keyRegex = /\["(.*?)"\] = {\s*userId = "(.*?)",\s*hwid = "(.*?)",\s*expiresAt = (\d+)\s*}/g;
-    let match;
-    let keys = {};
+// Command handlers
+async function handleGetKey(interaction) {
+    const hwid = interaction.options.getString('hwid');
+    const userId = interaction.user.id;
 
-    while ((match = keyRegex.exec(luaContent)) !== null) {
-        keys[match[1]] = {
-            userId: match[2],
-            hwid: match[3],
-            expiresAt: parseInt(match[4], 10)
-        };
+    try {
+        await interaction.deferReply({ ephemeral: true });
+
+        const { key, expiresAt } = await keyManager.addKey(userId, hwid);
+        
+        const dmEmbed = createEmbed(
+            'Your Photon Key',
+            `**Key**: \`${key}\`\n**Expires**: ${formatExpirationTime(expiresAt)}`,
+            0x00FF00
+        );
+
+        try {
+            await interaction.user.send({ embeds: [dmEmbed] });
+            await interaction.editReply({ content: 'Your key has been sent to your DMs!', ephemeral: true });
+        } catch (dmError) {
+            await interaction.editReply({ 
+                content: 'Could not send you a DM. Please enable DMs and try again.', 
+                ephemeral: true 
+            });
+        }
+
+        await sendKeysLuaToChannel();
+    } catch (error) {
+        await interaction.editReply({ 
+            content: `Error: ${error.message}`, 
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleDeleteKey(interaction) {
+    if (!interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
+        return interaction.reply({ 
+            content: '❌ You do not have permission to use this command.', 
+            ephemeral: true 
+        });
     }
 
-    return keys;
+    const userIdToDelete = interaction.options.getString('userid');
+    
+    try {
+        await interaction.deferReply({ ephemeral: true });
+        
+        const deleted = await keyManager.removeKey(userIdToDelete);
+        if (!deleted) {
+            return interaction.editReply({ 
+                content: `No key found for user ${userIdToDelete}.`, 
+                ephemeral: true 
+            });
+        }
+
+        await sendKeysLuaToChannel();
+        await interaction.editReply({ 
+            content: `✅ Successfully removed key for user ${userIdToDelete}.`, 
+            ephemeral: true 
+        });
+    } catch (error) {
+        await interaction.editReply({ 
+            content: `❌ Error: ${error.message}`, 
+            ephemeral: true 
+        });
+    }
 }
+
+async function handleCheckList(interaction) {
+    try {
+        await interaction.deferReply({ ephemeral: true });
+        
+        const keys = keyManager.getAllKeys();
+        if (keys.length === 0) {
+            return interaction.editReply({ 
+                content: 'No keys found in the database.', 
+                ephemeral: true 
+            });
+        }
+
+        const embed = createEmbed(
+            'Current Keys',
+            `Total keys: ${keys.length}`
+        );
+
+        // Split into multiple embeds if too many keys
+        const chunks = [];
+        let currentChunk = [];
+        let charCount = 0;
+
+        for (const key of keys) {
+            const keyInfo = `**Key**: \`${key.key}\`\n**User**: <@${key.userId}>\n**HWID**: ||${key.hwid}||\n**Expires**: ${formatExpirationTime(key.expiresAt)}\n\n`;
+            
+            if (charCount + keyInfo.length > 4000) {
+                chunks.push(currentChunk);
+                currentChunk = [keyInfo];
+                charCount = keyInfo.length;
+            } else {
+                currentChunk.push(keyInfo);
+                charCount += keyInfo.length;
+            }
+        }
+
+        if (currentChunk.length > 0) {
+            chunks.push(currentChunk);
+        }
+
+        // Send first embed
+        embed.setDescription(chunks[0].join(''));
+        await interaction.editReply({ embeds: [embed], ephemeral: true });
+
+        // Send additional embeds if needed
+        for (let i = 1; i < chunks.length; i++) {
+            const extraEmbed = createEmbed(
+                'Current Keys (Continued)',
+                chunks[i].join('')
+            );
+            await interaction.followUp({ embeds: [extraEmbed], ephemeral: true });
+        }
+    } catch (error) {
+        await interaction.editReply({ 
+            content: `❌ Error: ${error.message}`, 
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleAddKey(interaction) {
+    if (!interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
+        return interaction.reply({ 
+            content: '❌ You do not have permission to use this command.', 
+            ephemeral: true 
+        });
+    }
+
+    const attachment = interaction.options.getAttachment('file');
+    if (!attachment || !attachment.name.endsWith('.lua')) {
+        return interaction.reply({ 
+            content: '❌ Please attach a valid .lua file.', 
+            ephemeral: true 
+        });
+    }
+
+    try {
+        await interaction.deferReply({ ephemeral: true });
+        
+        const response = await fetch(attachment.url);
+        if (!response.ok) throw new Error('Failed to download file');
+        
+        const fileContent = await response.text();
+        const importedKeys = await keyManager.importFromLua(fileContent);
+        
+        await sendKeysLuaToChannel();
+        
+        await interaction.editReply({ 
+            content: `✅ Successfully imported ${importedKeys.length} keys.`, 
+            ephemeral: true 
+        });
+    } catch (error) {
+        await interaction.editReply({ 
+            content: `❌ Error: ${error.message}`, 
+            ephemeral: true 
+        });
+    }
+}
+
+// Discord event handlers
+client.once('ready', async () => {
+    console.log(`Logged in as ${client.user.tag}`);
+    
+    // Schedule regular cleanup
+    cron.schedule(`*/${CONFIG.CLEANUP_INTERVAL_MINUTES} * * * *`, async () => {
+        try {
+            const count = await keyManager.cleanExpiredKeys();
+            if (count > 0) {
+                console.log(`Cleaned up ${count} expired keys`);
+                await sendKeysLuaToChannel();
+            }
+        } catch (error) {
+            console.error('Error during scheduled cleanup:', error);
+        }
+    });
+});
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
-    // Handling `/getkey` command
-    if (interaction.commandName === 'getkey') {
-        const hwid = interaction.options.getString('hwid');
-        const userId = interaction.user.id;
-        
-        let data = loadData();
-        
-        for (const key in data) {
-            if (data[key].userId === userId) {
-                return interaction.reply({ content: 'You already have a key in the database!', ephemeral: true });
-            }
-            if (data[key].hwid === hwid) {
-                return interaction.reply({ content: 'This HWID already has a key assigned!', ephemeral: true });
-            }
+    try {
+        switch (interaction.commandName) {
+            case 'getkey':
+                await handleGetKey(interaction);
+                break;
+            case 'del':
+                await handleDeleteKey(interaction);
+                break;
+            case 'checklist':
+                await handleCheckList(interaction);
+                break;
+            case 'addkey':
+                await handleAddKey(interaction);
+                break;
+            default:
+                await interaction.reply({ 
+                    content: 'Unknown command', 
+                    ephemeral: true 
+                });
         }
-
-        const key = generateKey();
-        const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-        data[key] = { userId, hwid, expiresAt };
-        saveData(data);
-
-        await interaction.reply({ content: 'Generating your key... Please wait.', ephemeral: true });
-
-        await interaction.user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
-            .then(() => interaction.followUp({ content: 'Key sent to your DMs!', ephemeral: true }))
-            .catch(() => interaction.followUp({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true }));
-    
-    sendKeysLuaToChannel();
-    }
-
-    // Handling `/del` command
-    if (interaction.commandName === 'del') {
-        const userIdToDelete = interaction.options.getString('userid');
-        const userRole = interaction.member.roles.cache.has('1349042694776819763'); // Check if the user has the required role
-
-        if (!userRole) {
-            return interaction.reply({ content: 'You do not have the necessary role to delete a user\'s key.', ephemeral: true });
-        }
-
-        let data = loadData();
-        const keyToDelete = Object.keys(data).find(key => data[key].userId === userIdToDelete);
-
-        if (!keyToDelete) {
-            return interaction.reply({ content: 'No key found for the provided user ID.', ephemeral: true });
-        }
-
-        // Delete the key from the database
-        delete data[keyToDelete];
-        saveData(data);
-        sendKeysLuaToChannel();
-        return interaction.reply({ content: `Key for user ${userIdToDelete} has been removed successfully.`, ephemeral: true });
-    }
-
-    // Handling `/checklist` command
-    if (interaction.commandName === 'checklist') {
-        let data = loadData();
-
-        if (Object.keys(data).length === 0) {
-            return interaction.reply({ content: 'No keys found in the database.', ephemeral: true });
-        }
-
-        // Prepare a more user-friendly view of the keys
-        let keyList = 'Here is the list of all keys:\n\n';
-        for (const key in data) {
-            keyList += `**Key**: \`${key}\`\n`;
-            keyList += `**User ID**: <@${data[key].userId}>\n`;
-            keyList += `**HWID**: ${data[key].hwid}\n`;
-            keyList += `**Expires At**: ${formatExpirationTime(data[key].expiresAt)}\n\n`;
-        }
-
-        // Respond with the formatted keys list
-        return interaction.reply({ content: keyList, ephemeral: true });
-    }
-
-    // Handling `/addkey` command (for privileged users with the specified role)
-    if (interaction.commandName === 'addkey') {
-        const userRole = interaction.member.roles.cache.has('1349042694776819763'); // Role check
-
-        if (!userRole) {
-            return interaction.reply({ content: 'You do not have the necessary role to add keys.', ephemeral: true });
-        }
-
-        // Check for attached file
-        const attachment = interaction.options.getAttachment('file');
-        if (!attachment || !attachment.name.endsWith('.lua')) {
-            return interaction.reply({ content: 'Please attach a valid keys.lua file.', ephemeral: true });
-        }
-
-        try {
-            // Fetch file contents
-            const response = await fetch(attachment.url);
-            const fileContent = await response.text();
-
-            let newKeys = parseLuaKeys(fileContent);
-            if (!newKeys) {
-                return interaction.reply({ content: 'Invalid keys.lua format.', ephemeral: true });
-            }
-
-            let data = loadData(); // Load current keys.lua data
-
-            for (const key in newKeys) {
-                if (!data[key]) { // Avoid duplicate keys
-                    data[key] = newKeys[key];
-                }
-            }
-
-            saveData(data); // Save updated keys.lua
-            sendKeysLuaToChannel(); // Send updated keys.lua to channel
-
-            return interaction.reply({ content: `Successfully added keys from keys.lua.`, ephemeral: true });
-        } catch (error) {
-            console.error('Error processing file:', error);
-            return interaction.reply({ content: 'Error reading the file. Ensure it is a valid keys.lua file.', ephemeral: true });
+    } catch (error) {
+        console.error('Error handling interaction:', error);
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ 
+                content: '❌ An error occurred while processing your command.', 
+                ephemeral: true 
+            });
+        } else {
+            await interaction.followUp({ 
+                content: '❌ An error occurred while processing your command.', 
+                ephemeral: true 
+            });
         }
     }
 });
+
+// Register slash commands
 async function registerCommands() {
     const commands = [
         new SlashCommandBuilder()
             .setName('getkey')
-            .setDescription('Generates a Photon key')
+            .setDescription('Generate a Photon key')
             .addStringOption(option => 
                 option.setName('hwid')
-                .setDescription('Enter your HWID')
-                .setRequired(true)
+                    .setDescription('Your HWID')
+                    .setRequired(true)
             ),
         new SlashCommandBuilder()
             .setName('del')
-            .setDescription('Delete a key by user ID')
+            .setDescription('Delete a user\'s key (Admin only)')
             .addStringOption(option => 
                 option.setName('userid')
-                .setDescription('Enter the user ID to delete')
-                .setRequired(true)
+                    .setDescription('The user ID to delete')
+                    .setRequired(true)
             ),
         new SlashCommandBuilder()
             .setName('checklist')
-            .setDescription('View all keys in the database'),
+            .setDescription('List all active keys'),
         new SlashCommandBuilder()
             .setName('addkey')
-            .setDescription('Upload a keys.lua file to add multiple keys at once')
+            .setDescription('Import keys from a keys.lua file (Admin only)')
             .addAttachmentOption(option =>
                 option.setName('file')
-                .setDescription('Attach the keys.lua file')
-                .setRequired(true)
+                    .setDescription('The keys.lua file to import')
+                    .setRequired(true)
             )
     ].map(command => command.toJSON());
 
-    const rest = new REST({ version: '10' }).setToken(TOKEN);
+    const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+    
     try {
-        console.log('Registering slash commands...');
-        await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-        console.log('Slash commands registered successfully!');
+        console.log('Refreshing slash commands...');
+        await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+        console.log('Successfully reloaded slash commands');
     } catch (error) {
-        console.error(error);
+        console.error('Error refreshing commands:', error);
     }
 }
 
-
-registerCommands();
-
-const PORT = 8080;
-
-const server = http.createServer((req, res) => {
-    if (req.url === '/keepalive') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Bot is alive!');
-    } else if (req.url === '/keys.lua') {
-        fs.readFile(DATA_FILE, 'utf8', (err, data) => {
-            if (err) {
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
-                res.end('Error reading keys.lua file');
-                return;
+// HTTP server for keepalive and key access
+function setupServer() {
+    const server = http.createServer(async (req, res) => {
+        try {
+            if (req.url === '/keepalive') {
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end('Bot is alive!');
+            } else if (req.url === '/keys.lua') {
+                const data = await fs.readFile(CONFIG.DATA_FILE, 'utf8');
+                res.writeHead(200, { 
+                    'Content-Type': 'application/x-lua',
+                    'Content-Disposition': 'attachment; filename=keys.lua'
+                });
+                res.end(data);
+            } else {
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('Not Found');
             }
-            res.writeHead(200, { 'Content-Type': 'application/x-lua' });
-            res.end(data);
-        });
-    } else {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('Not Found');
-    }
-});
-
-server.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
-});
-
-setInterval(() => {
-    http.get(`http://localhost:${PORT}/keepalive`, (res) => {
-        console.log('Keepalive ping successful');
-    }).on('error', (e) => {
-        console.error(`Keepalive ping failed: ${e.message}`);
+        } catch (error) {
+            console.error('HTTP server error:', error);
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Internal Server Error');
+        }
     });
-}, 10 * 60);
 
-client.login(TOKEN);
+    server.listen(CONFIG.SERVER_PORT, () => {
+        console.log(`Server running on port ${CONFIG.SERVER_PORT}`);
+    });
+
+    // Keepalive ping
+    setInterval(() => {
+        http.get(`http://localhost:${CONFIG.SERVER_PORT}/keepalive`, (res) => {
+            console.log('Keepalive ping successful');
+        }).on('error', (err) => {
+            console.error('Keepalive ping failed:', err.message);
+        });
+    }, 10 * 60 * 1000); // Every 10 minutes
+}
+
+// Initialize
+async function initialize() {
+    try {
+        await registerCommands();
+        setupServer();
+        await client.login(process.env.TOKEN);
+    } catch (error) {
+        console.error('Initialization error:', error);
+        process.exit(1);
+    }
+}
+
+initialize();
