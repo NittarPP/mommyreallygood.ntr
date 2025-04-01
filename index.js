@@ -4,11 +4,6 @@ const path = require('path');
 const { randomBytes } = require('node:crypto');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const http = require('http');
-const express = require('express');
-
-// Initialize Express
-const app = express();
-const server = http.createServer(app);
 
 const configPath = path.resolve(__dirname, 'config.json');
 let config;
@@ -60,7 +55,6 @@ function saveData(data) {
         luaContent += `    ["${key}"] = {\n        userId = "${entry.userId}",\n        hwid = "${entry.hwid}",\n        expiresAt = ${entry.expiresAt}\n    },\n`;
     }
     luaContent += '}\n';
-
     fs.writeFileSync(DATA_FILE, luaContent);
 }
 
@@ -69,8 +63,7 @@ function generateKey() {
 }
 
 function formatExpirationTime(timestamp) {
-    const date = new Date(timestamp);
-    return date.toLocaleString();
+    return new Date(timestamp).toLocaleString();
 }
 
 function cleanExpiredKeys() {
@@ -92,12 +85,11 @@ function cleanExpiredKeys() {
 
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    setInterval(cleanExpiredKeys, 60 * 60 * 1000); // Clean expired keys every hour
+    setInterval(cleanExpiredKeys, 60 * 60 * 1000);
 });
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
-
     if (interaction.commandName === 'getkey') {
         const hwid = interaction.options.getString('hwid');
         const userId = interaction.user.id;
@@ -121,14 +113,8 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ content: 'Generating your key... Please wait.', ephemeral: true });
 
         await interaction.user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
-            .then(() => {
-                return interaction.followUp({ content: 'Key sent to your DMs!', ephemeral: true });
-            })
-            .catch(() => {
-                return interaction.followUp({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true });
-            });
-        
-        return { key, hwid, expiresAt };
+            .then(() => interaction.followUp({ content: 'Key sent to your DMs!', ephemeral: true }))
+            .catch(() => interaction.followUp({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true }));
     }
 });
 
@@ -156,44 +142,38 @@ async function registerCommands() {
 
 registerCommands();
 
-// Set the keepalive interval to 10 minutes (in milliseconds)
-const keepAliveInterval = 10 * 60 * 1000; 
-
 const PORT = 8080;
 
-app.get('/keepalive', (req, res) => {
-    res.status(200).send('Bot is alive!');
-});
-
-app.get('/', (req, res) => {
-  const imagePath = path.join(__dirname, 'index.html');
-  res.sendFile(imagePath);
-});
-
-app.get('/keys.lua', (req, res) => {
-    fs.readFile(DATA_FILE, 'utf8', (err, data) => {
-        if (err) {
-            res.statusCode = 500;
-            res.end('Error reading keys.lua file');
-            return;
-        }
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'application/x-lua');
-        res.end(data);
-    });
+const server = http.createServer((req, res) => {
+    if (req.url === '/keepalive') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Bot is alive!');
+    } else if (req.url === '/keys.lua') {
+        fs.readFile(DATA_FILE, 'utf8', (err, data) => {
+            if (err) {
+                res.writeHead(500, { 'Content-Type': 'text/plain' });
+                res.end('Error reading keys.lua file');
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/x-lua' });
+            res.end(data);
+        });
+    } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+    }
 });
 
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
 });
 
-// Set an interval to ping the /keepalive route every 10 minutes
 setInterval(() => {
     http.get(`http://localhost:${PORT}/keepalive`, (res) => {
         console.log('Keepalive ping successful');
     }).on('error', (e) => {
         console.error(`Keepalive ping failed: ${e.message}`);
     });
-}, keepAliveInterval);
+}, 10 * 60);
 
 client.login(TOKEN);
