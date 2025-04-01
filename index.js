@@ -114,8 +114,14 @@ client.on('interactionCreate', async interaction => {
         saveData(data);
 
         await interaction.user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
-            .then(() => interaction.reply({ content: 'Key sent to your DMs!', ephemeral: true }))
-            .catch(() => interaction.reply({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true }));
+            .then(() => {
+                // Use followUp instead of reply since the interaction has already been acknowledged
+                return interaction.followUp({ content: 'Key sent to your DMs!', ephemeral: true });
+            })
+            .catch(() => {
+                // If DM fails, use followUp to let the user know about the failure
+                return interaction.followUp({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true });
+            });
         
         return { key, hwid, expiresAt };
     }
