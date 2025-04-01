@@ -3,7 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { randomBytes } = require('node:crypto');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
-const http = require('http');  // Import the http module
+const http = require('http');
+const express = require('express');
+
+// Initialize Express
+const app = express();
+const server = http.createServer(app);
 
 const configPath = path.resolve(__dirname, 'config.json');
 let config;
@@ -87,7 +92,7 @@ function cleanExpiredKeys() {
 
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    setInterval(cleanExpiredKeys, 60 * 60 * 1000);
+    setInterval(cleanExpiredKeys, 60 * 60 * 1000); // Clean expired keys every hour
 });
 
 client.on('interactionCreate', async interaction => {
@@ -113,16 +118,13 @@ client.on('interactionCreate', async interaction => {
         data[key] = { userId, hwid, expiresAt };
         saveData(data);
 
-        // Acknowledge the interaction first
         await interaction.reply({ content: 'Generating your key... Please wait.', ephemeral: true });
 
         await interaction.user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
             .then(() => {
-                // Use followUp instead of reply since the interaction has already been acknowledged
                 return interaction.followUp({ content: 'Key sent to your DMs!', ephemeral: true });
             })
             .catch(() => {
-                // If DM fails, use followUp to let the user know about the failure
                 return interaction.followUp({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true });
             });
         
@@ -154,29 +156,44 @@ async function registerCommands() {
 
 registerCommands();
 
-// HTTP server to serve the keys.lua file
-const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/keys.lua') {
-        fs.readFile(DATA_FILE, 'utf8', (err, data) => {
-            if (err) {
-                res.statusCode = 500;
-                res.end('Error reading keys.lua file');
-                return;
-            }
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/x-lua');
-            res.end(data);
-        });
-    } else {
-        res.statusCode = 404;
-        res.end('Not Found');
-    }
+// Set the keepalive interval to 10 minutes (in milliseconds)
+const keepAliveInterval = 10 * 60 * 1000; 
+
+const PORT = 8080;
+
+app.get('/keepalive', (req, res) => {
+    res.status(200).send('Bot is alive!');
 });
 
-// Set the server to listen on a specific port (e.g., port 8080)
-const PORT = 8080;
+app.get('/', (req, res) => {
+  const imagePath = path.join(__dirname, 'index.html');
+  res.sendFile(imagePath);
+});
+
+app.get('/keys.lua', (req, res) => {
+    fs.readFile(DATA_FILE, 'utf8', (err, data) => {
+        if (err) {
+            res.statusCode = 500;
+            res.end('Error reading keys.lua file');
+            return;
+        }
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/x-lua');
+        res.end(data);
+    });
+});
+
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
 });
+
+// Set an interval to ping the /keepalive route every 10 minutes
+setInterval(() => {
+    http.get(`http://localhost:${PORT}/keepalive`, (res) => {
+        console.log('Keepalive ping successful');
+    }).on('error', (e) => {
+        console.error(`Keepalive ping failed: ${e.message}`);
+    });
+}, keepAliveInterval);
 
 client.login(TOKEN);
