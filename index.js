@@ -116,6 +116,47 @@ client.on('interactionCreate', async interaction => {
             .then(() => interaction.followUp({ content: 'Key sent to your DMs!', ephemeral: true }))
             .catch(() => interaction.followUp({ content: 'Failed to send DM. Please enable DMs and try again.', ephemeral: true }));
     }
+
+    // Handling `/del` command
+    if (interaction.commandName === 'del') {
+        const userIdToDelete = interaction.options.getString('userid');
+        const userRole = interaction.member.roles.cache.has('1349042694776819763'); // Check if the user has the required role
+
+        if (!userRole) {
+            return interaction.reply({ content: 'You do not have the necessary role to delete a user\'s key.', ephemeral: true });
+        }
+
+        let data = loadData();
+        const keyToDelete = Object.keys(data).find(key => data[key].userId === userIdToDelete);
+
+        if (!keyToDelete) {
+            return interaction.reply({ content: 'No key found for the provided user ID.', ephemeral: true });
+        }
+
+        // Delete the key from the database
+        delete data[keyToDelete];
+        saveData(data);
+
+        return interaction.reply({ content: `Key for user ${userIdToDelete} has been removed successfully.`, ephemeral: true });
+    }
+
+    // Handling `/checklist` command
+    if (interaction.commandName === 'checklist') {
+        let data = loadData();
+
+        if (Object.keys(data).length === 0) {
+            return interaction.reply({ content: 'No keys found in the database.', ephemeral: true });
+        }
+
+        // Format the keys list
+        let keyList = 'List of Keys:\n';
+        for (const key in data) {
+            keyList += `**Key**: ${key}\nUser ID: ${data[key].userId}\nHWID: ${data[key].hwid}\nExpires At: ${formatExpirationTime(data[key].expiresAt)}\n\n`;
+        }
+
+        // Respond with the list of keys
+        return interaction.reply({ content: keyList, ephemeral: true });
+    }
 });
 
 async function registerCommands() {
