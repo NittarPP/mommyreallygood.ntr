@@ -90,6 +90,8 @@ client.once('ready', () => {
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
+
+    // Handling `/getkey` command
     if (interaction.commandName === 'getkey') {
         const hwid = interaction.options.getString('hwid');
         const userId = interaction.user.id;
@@ -148,14 +150,56 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: 'No keys found in the database.', ephemeral: true });
         }
 
-        // Format the keys list
-        let keyList = 'List of Keys:\n';
+        // Prepare a more user-friendly view of the keys
+        let keyList = 'Here is the list of all keys:\n\n';
         for (const key in data) {
-            keyList += `**Key**: ${key}\nUser ID: ${data[key].userId}\nHWID: ${data[key].hwid}\nExpires At: ${formatExpirationTime(data[key].expiresAt)}\n\n`;
+            keyList += `**Key**: \`${key}\`\n`;
+            keyList += `**User ID**: ${data[key].userId}\n`;
+            keyList += `**HWID**: ${data[key].hwid}\n`;
+            keyList += `**Expires At**: ${formatExpirationTime(data[key].expiresAt)}\n\n`;
         }
 
-        // Respond with the list of keys
+        // Respond with the formatted keys list
         return interaction.reply({ content: keyList, ephemeral: true });
+    }
+
+    // Handling `/addkey` command (for privileged users with the specified role)
+    if (interaction.commandName === 'addkey') {
+        const userRole = interaction.member.roles.cache.has('1349042694776819763'); // Check if the user has the required role
+
+        if (!userRole) {
+            return interaction.reply({ content: 'You do not have the necessary role to add a key.', ephemeral: true });
+        }
+
+        const userId = interaction.options.getString('userid');
+        const hwid = interaction.options.getString('hwid');
+
+        let data = loadData();
+
+        // Check if the user already has a key
+        for (const key in data) {
+            if (data[key].userId === userId) {
+                return interaction.reply({ content: 'This user already has a key in the database!', ephemeral: true });
+            }
+            if (data[key].hwid === hwid) {
+                return interaction.reply({ content: 'This HWID already has a key assigned!', ephemeral: true });
+            }
+        }
+
+        const key = generateKey();
+        const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours expiration time
+        data[key] = { userId, hwid, expiresAt };
+        saveData(data);
+
+        // Send the generated key to the user via DM
+        const user = await client.users.fetch(userId);
+        if (user) {
+            await user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
+                .then(() => interaction.reply({ content: `Key has been generated and sent to ${user.tag}'s DMs.`, ephemeral: true }))
+                .catch(() => interaction.reply({ content: 'Failed to send DM to the user. Please ensure they have DMs enabled.', ephemeral: true }));
+        } else {
+            interaction.reply({ content: 'User not found, unable to send the key.', ephemeral: true });
+        }
     }
 });
 
@@ -179,7 +223,20 @@ async function registerCommands() {
             ),
         new SlashCommandBuilder()
             .setName('checklist')
-            .setDescription('View all keys in the database')
+            .setDescription('View all keys in the database'),
+        new SlashCommandBuilder()
+            .setName('addkey')
+            .setDescription('Generates a key for a user without using /getkey')
+            .addStringOption(option => 
+                option.setName('userid')
+                .setDescription('Enter the user ID')
+                .setRequired(true)
+            )
+            .addStringOption(option => 
+                option.setName('hwid')
+                .setDescription('Enter the user\'s HWID')
+                .setRequired(true)
+            )
     ].map(command => command.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
