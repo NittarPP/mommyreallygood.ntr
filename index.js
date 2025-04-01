@@ -168,7 +168,18 @@ async function registerCommands() {
                 option.setName('hwid')
                 .setDescription('Enter your HWID')
                 .setRequired(true)
-            )
+            ),
+        new SlashCommandBuilder()
+            .setName('del')
+            .setDescription('Delete a key by user ID')
+            .addStringOption(option => 
+                option.setName('userid')
+                .setDescription('Enter the user ID to delete')
+                .setRequired(true)
+            ),
+        new SlashCommandBuilder()
+            .setName('checklist')
+            .setDescription('View all keys in the database')
     ].map(command => command.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
