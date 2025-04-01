@@ -4,7 +4,6 @@ const path = require('path');
 const { randomBytes } = require('node:crypto');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const http = require('http');
-const cron = require('node-cron');
 
 // Configuration
 const CONFIG = {
@@ -382,8 +381,8 @@ async function handleAddKey(interaction) {
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     
-    // Schedule regular cleanup
-    cron.schedule(`*/${CONFIG.CLEANUP_INTERVAL_MINUTES} * * * *`, async () => {
+    // Schedule regular cleanup using setInterval instead of node-cron
+    setInterval(async () => {
         try {
             const count = await keyManager.cleanExpiredKeys();
             if (count > 0) {
@@ -393,7 +392,7 @@ client.once('ready', async () => {
         } catch (error) {
             console.error('Error during scheduled cleanup:', error);
         }
-    });
+    }, CONFIG.CLEANUP_INTERVAL_MINUTES * 60 * 1000);
 });
 
 client.on('interactionCreate', async interaction => {
