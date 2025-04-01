@@ -154,7 +154,7 @@ client.on('interactionCreate', async interaction => {
         let keyList = 'Here is the list of all keys:\n\n';
         for (const key in data) {
             keyList += `**Key**: \`${key}\`\n`;
-            keyList += `**User ID**: ${data[key].userId}\n`;
+            keyList += `**User ID**: <@${data[key].userId}>\n`;
             keyList += `**HWID**: ${data[key].hwid}\n`;
             keyList += `**Expires At**: ${formatExpirationTime(data[key].expiresAt)}\n\n`;
         }
