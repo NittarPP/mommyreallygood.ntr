@@ -113,6 +113,9 @@ client.on('interactionCreate', async interaction => {
         data[key] = { userId, hwid, expiresAt };
         saveData(data);
 
+        // Acknowledge the interaction first
+        await interaction.reply({ content: 'Generating your key... Please wait.', ephemeral: true });
+
         await interaction.user.send(`Your generated key: \`${key}\`\nThis key will expire on: **${formatExpirationTime(expiresAt)}**`)
             .then(() => {
                 // Use followUp instead of reply since the interaction has already been acknowledged
