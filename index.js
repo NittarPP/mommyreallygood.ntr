@@ -8,12 +8,15 @@ const http = require('http');
 // Configuration
 const CONFIG = {
     DATA_FILE: path.resolve(__dirname, 'keys.lua'),
+    BACKUP_FILE: path.resolve(__dirname, 'keys_backup.lua'),
     ADMIN_ROLE_ID: '1349042694776819763',
     KEY_CHANNEL_ID: '1356653521272963203',
     KEY_PREFIX: 'Photon',
     KEY_EXPIRATION_DAYS: 1,
     SERVER_PORT: 8080,
-    CLEANUP_INTERVAL_MINUTES: 60
+    CLEANUP_INTERVAL_MINUTES: 60,
+    BACKUP_INTERVAL_MINUTES: 30,
+    MAX_KEY_LENGTH: 100
 };
 
 // Validate environment variables
@@ -39,11 +42,49 @@ class KeyManager {
 
     async loadData() {
         try {
+            // First try to load from main file
             await fs.access(CONFIG.DATA_FILE);
             const content = (await fs.readFile(CONFIG.DATA_FILE, 'utf8')).trim();
             
             if (!content.startsWith('return {')) {
-                console.warn('Invalid keys.lua format, initializing empty database');
+                console.warn('Invalid keys.lua format, trying backup...');
+                return await this.loadBackup();
+            }
+
+            const keyRegex = /\["(.*?)"\] = {\s*userId = "(.*?)",\s*hwid = "(.*?)",\s*expiresAt = (\d+)\s*}/g;
+            let match;
+            this.data = {};
+            
+            while ((match = keyRegex.exec(content)) !== null) {
+                if (match[1].length > CONFIG.MAX_KEY_LENGTH) {
+                    console.warn(`Skipping invalid key (too long): ${match[1]}`);
+                    continue;
+                }
+                this.data[match[1]] = {
+                    userId: match[2],
+                    hwid: match[3],
+                    expiresAt: parseInt(match[4], 10)
+                };
+            }
+            console.log('Successfully loaded data from main file');
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log('Main data file not found, trying backup...');
+                await this.loadBackup();
+            } else {
+                console.error('Error loading main data file:', error);
+                await this.loadBackup();
+            }
+        }
+    }
+
+    async loadBackup() {
+        try {
+            await fs.access(CONFIG.BACKUP_FILE);
+            const backupContent = (await fs.readFile(CONFIG.BACKUP_FILE, 'utf8')).trim();
+            
+            if (!backupContent.startsWith('return {')) {
+                console.warn('Invalid backup format, initializing empty database');
                 this.data = {};
                 return;
             }
@@ -52,20 +93,30 @@ class KeyManager {
             let match;
             this.data = {};
             
-            while ((match = keyRegex.exec(content)) !== null) {
+            while ((match = keyRegex.exec(backupContent)) !== null) {
+                if (match[1].length > CONFIG.MAX_KEY_LENGTH) {
+                    console.warn(`Skipping invalid key (too long): ${match[1]}`);
+                    continue;
+                }
                 this.data[match[1]] = {
                     userId: match[2],
                     hwid: match[3],
                     expiresAt: parseInt(match[4], 10)
                 };
             }
+            console.log('Successfully loaded data from backup');
+            
+            // Save the loaded backup to main file
+            await this.saveData();
         } catch (error) {
             if (error.code === 'ENOENT') {
-                console.log('No keys.lua file found, creating new one');
+                console.log('No backup file found, initializing empty database');
                 this.data = {};
                 await this.saveData();
             } else {
-                console.error('Error loading keys data:', error);
+                console.error('Error loading backup data:', error);
+                this.data = {};
+                await this.saveData();
             }
         }
     }
@@ -77,7 +128,13 @@ class KeyManager {
                 luaContent += `    ["${key}"] = {\n        userId = "${entry.userId}",\n        hwid = "${entry.hwid}",\n        expiresAt = ${entry.expiresAt}\n    },\n`;
             }
             luaContent += '}\n';
+            
+            // Save to main file
             await fs.writeFile(CONFIG.DATA_FILE, luaContent);
+            
+            // Create backup
+            await fs.copyFile(CONFIG.DATA_FILE, CONFIG.BACKUP_FILE);
+            console.log('Data saved and backup created');
         } catch (error) {
             console.error('Error saving keys data:', error);
             throw error;
@@ -280,6 +337,12 @@ async function handleDeleteKey(interaction) {
 }
 
 async function handleCheckList(interaction) {
+    if (!interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
+        return interaction.reply({ 
+            content: '❌ You do not have permission to use this command.', 
+            ephemeral: true 
+        });
+    }
     try {
         await interaction.deferReply({ ephemeral: true });
         
@@ -381,7 +444,7 @@ async function handleAddKey(interaction) {
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     
-    // Schedule regular cleanup using setInterval instead of node-cron
+    // Schedule regular cleanup
     setInterval(async () => {
         try {
             const count = await keyManager.cleanExpiredKeys();
@@ -393,6 +456,36 @@ client.once('ready', async () => {
             console.error('Error during scheduled cleanup:', error);
         }
     }, CONFIG.CLEANUP_INTERVAL_MINUTES * 60 * 1000);
+
+    // Schedule regular backups
+    setInterval(async () => {
+        try {
+            await keyManager.saveData();
+            console.log('Regular backup completed');
+        } catch (error) {
+            console.error('Error during scheduled backup:', error);
+        }
+    }, CONFIG.BACKUP_INTERVAL_MINUTES * 60 * 1000);
+});
+
+client.on('disconnect', (event) => {
+    console.warn(`Disconnected: ${event.reason} (${event.code})`);
+    // Force save data before exiting
+    keyManager.saveData().catch(console.error);
+});
+
+client.on('reconnecting', () => {
+    console.log('Attempting to reconnect...');
+});
+
+client.on('resume', (replayed) => {
+    console.log(`Reconnected! Replayed ${replayed} events`);
+    // Reload data after reconnection
+    keyManager.loadData().catch(console.error);
+});
+
+client.on('error', (error) => {
+    console.error('Client error:', error);
 });
 
 client.on('interactionCreate', async interaction => {
@@ -521,6 +614,22 @@ async function initialize() {
     try {
         await registerCommands();
         setupServer();
+        
+        // Handle process termination gracefully
+        process.on('SIGINT', async () => {
+            console.log('Shutting down gracefully...');
+            await keyManager.saveData();
+            client.destroy();
+            process.exit(0);
+        });
+
+        process.on('SIGTERM', async () => {
+            console.log('Shutting down gracefully...');
+            await keyManager.saveData();
+            client.destroy();
+            process.exit(0);
+        });
+
         await client.login(process.env.TOKEN);
     } catch (error) {
         console.error('Initialization error:', error);
