@@ -4,6 +4,7 @@ const path = require('path');
 const { randomBytes } = require('node:crypto');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const http = require('http');
+const WebSocket = require('ws');
 
 // Enhanced Configuration
 const CONFIG = {
@@ -11,16 +12,19 @@ const CONFIG = {
     BACKUP_FILE: path.resolve(__dirname, 'keys_backup.lua'),
     ADMIN_ROLE_ID: '1349042694776819763',
     KEY_CHANNEL_ID: '1356653521272963203',
+    USER_COUNT_CHANNEL_ID: '1356894488869736508',
     KEY_PREFIX: 'Photon',
     KEY_EXPIRATION_DAYS: 1,
     SERVER_PORT: 8080,
+    WEBSOCKET_PORT: 8081,
     CLEANUP_INTERVAL_MINUTES: 60,
     BACKUP_INTERVAL_MINUTES: 30,
     MAX_KEY_LENGTH: 100,
     MAX_HWID_LENGTH: 255,
     RATE_LIMITS: {
         GET_KEY: { count: 1, window: 3600000 }, // 1 per hour
-        EDIT_HWID: { count: 3, window: 86400000 } // 3 per day
+        EDIT_HWID: { count: 3, window: 86400000 }, // 3 per day
+        USER_UPDATE: { count: 10, window: 1000 } // 10 per second
     },
     SECURITY: {
         MAX_KEYS_PER_USER: 1,
@@ -52,6 +56,11 @@ const client = new Client({
         GatewayIntentBits.MessageContent
     ] 
 });
+
+// Global variables for user count tracking
+let userCount = 0;
+let channelUpdateQueue = [];
+let isUpdatingChannel = false;
 
 class RateLimiter {
     constructor() {
@@ -87,7 +96,7 @@ class RateLimiter {
 class KeyManager {
     constructor() {
         this.data = {};
-        this.hwidChanges = new Map(); // Track HWID changes per user
+        this.hwidChanges = new Map();
         this.loadData();
     }
 
@@ -199,50 +208,44 @@ class KeyManager {
                 randomBytes(4).toString('hex')
             ];
             key = parts.join('-');
-        } while (this.data[key]); // Ensure uniqueness
+        } while (this.data[key]);
         
         return key;
     }
 
     isValidHwid(hwid) {
-    // Check if HWID is a string
-    if (typeof hwid !== 'string') {
-        logger.warn(`Invalid HWID type: ${typeof hwid}`);
-        return false;
-    }
-
-    // Trim whitespace and convert to lowercase
-    const cleanHwid = hwid.trim().toLowerCase();
-
-    // UUID v4 validation regex
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-    
-    // Test the format
-    const isValidFormat = uuidRegex.test(cleanHwid);
-    
-    if (!isValidFormat) {
-        logger.warn(`Invalid HWID format: ${hwid}`);
-        return false;
-    }
-
-    // Additional validation for UUID version/variant
-    try {
-        const parts = cleanHwid.split('-');
-        if (parts[2].substring(0, 1) !== '4') {
-            logger.warn(`Invalid UUID version in HWID: ${hwid}`);
+        if (typeof hwid !== 'string') {
+            logger.warn(`Invalid HWID type: ${typeof hwid}`);
             return false;
         }
-        if (!['8','9','a','b'].includes(parts[3].substring(0, 1))) {
-            logger.warn(`Invalid UUID variant in HWID: ${hwid}`);
+
+        const cleanHwid = hwid.trim().toLowerCase();
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+        
+        const isValidFormat = uuidRegex.test(cleanHwid);
+        
+        if (!isValidFormat) {
+            logger.warn(`Invalid HWID format: ${hwid}`);
             return false;
         }
-    } catch (e) {
-        logger.error(`Error validating HWID structure: ${e.message}`);
-        return false;
-    }
 
-    return true;
-}
+        try {
+            const parts = cleanHwid.split('-');
+            if (parts[2].substring(0, 1) !== '4') {
+                logger.warn(`Invalid UUID version in HWID: ${hwid}`);
+                return false;
+            }
+            if (!['8','9','a','b'].includes(parts[3].substring(0, 1))) {
+                logger.warn(`Invalid UUID variant in HWID: ${hwid}`);
+                return false;
+            }
+        } catch (e) {
+            logger.error(`Error validating HWID structure: ${e.message}`);
+            return false;
+        }
+
+        return true;
+    }
 
     async addKey(userId, hwid) {
         if (!this.isValidHwid(hwid)) {
@@ -317,19 +320,15 @@ class KeyManager {
             throw new Error('HWID already in use');
         }
 
-        // Track HWID changes
         const changes = this.hwidChanges.get(userId) || [];
         changes.push(Date.now());
         this.hwidChanges.set(userId, changes);
 
-        // Enforce maximum HWID changes
-        if (changes.length > CONFIG.SECURITY.MAX_HWID_CHANGES) {
-            const oldestAllowed = Date.now() - (CONFIG.SECURITY.KEY_REGENERATION_LIMIT * 60 * 60 * 1000);
-            const recentChanges = changes.filter(time => time > oldestAllowed);
-            
-            if (recentChanges.length >= CONFIG.SECURITY.MAX_HWID_CHANGES) {
-                throw new Error(`You can only change your HWID ${CONFIG.SECURITY.MAX_HWID_CHANGES} times per ${CONFIG.SECURITY.KEY_REGENERATION_LIMIT} hours`);
-            }
+        const oldestAllowed = Date.now() - (CONFIG.SECURITY.KEY_REGENERATION_LIMIT * 60 * 60 * 1000);
+        const recentChanges = changes.filter(time => time > oldestAllowed);
+        
+        if (recentChanges.length >= CONFIG.SECURITY.MAX_HWID_CHANGES) {
+            throw new Error(`You can only change your HWID ${CONFIG.SECURITY.MAX_HWID_CHANGES} times per ${CONFIG.SECURITY.KEY_REGENERATION_LIMIT} hours`);
         }
 
         this.data[key].hwid = newHwid;
@@ -412,6 +411,122 @@ async function sendKeysLuaToChannel() {
     } catch (error) {
         logger.error('Error sending keys.lua file:', error);
     }
+}
+
+// WebSocket server for real-time updates
+function setupWebSocketServer() {
+    const wss = new WebSocket.Server({ port: CONFIG.WEBSOCKET_PORT });
+
+    wss.on('connection', (ws) => {
+        logger.info('New WebSocket connection');
+        ws.send(JSON.stringify({ type: 'init', count: userCount }));
+
+        ws.on('close', () => {
+            logger.info('WebSocket connection closed');
+        });
+    });
+
+    logger.info(`WebSocket server running on port ${CONFIG.WEBSOCKET_PORT}`);
+    return wss;
+}
+
+// Broadcast count to all WebSocket clients
+function broadcastCount(wss) {
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'update', count: userCount }));
+        }
+    });
+}
+
+// Process channel update queue
+async function processChannelUpdateQueue(wss) {
+    if (isUpdatingChannel || channelUpdateQueue.length === 0) {
+        return;
+    }
+
+    isUpdatingChannel = true;
+    const latestCount = channelUpdateQueue[channelUpdateQueue.length - 1];
+    channelUpdateQueue = [];
+
+    try {
+        const channel = await client.channels.fetch(CONFIG.USER_COUNT_CHANNEL_ID);
+        if (channel) {
+            await channel.setName(`🌐▾runtime : ${latestCount}`);
+            logger.debug(`Updated channel name to: 🌐▾runtime : ${latestCount}`);
+            
+            // Broadcast to WebSocket clients
+            if (wss) {
+                broadcastCount(wss);
+            }
+        } else {
+            logger.error('Channel not found');
+        }
+    } catch (error) {
+        logger.error('Failed to update channel:', error);
+        if (channelUpdateQueue.length === 0) {
+            channelUpdateQueue.push(latestCount);
+            setTimeout(() => processChannelUpdateQueue(wss), 5000);
+        }
+    } finally {
+        isUpdatingChannel = false;
+        
+        if (channelUpdateQueue.length > 0) {
+            setTimeout(() => processChannelUpdateQueue(wss), 100);
+        }
+    }
+}
+
+// Handle user count updates
+async function handleUserUpdate(req, res, wss) {
+    if (req.method !== "POST") {
+        res.writeHead(405, { 'Content-Type': 'text/plain' });
+        return res.end('Method Not Allowed');
+    }
+
+    let body = '';
+    req.on('data', chunk => {
+        body += chunk.toString();
+    });
+
+    req.on('end', async () => {
+        try {
+            // Rate limiting
+            const rateLimit = rateLimiter.check(req.socket.remoteAddress, 'USER_UPDATE');
+            if (!rateLimit.allowed) {
+                res.writeHead(429, { 'Content-Type': 'text/plain' });
+                return res.end('Too many requests');
+            }
+
+            let change = 0;
+            if (body === "1") {
+                change = 1;
+            } else if (body === "0") {
+                change = -1;
+            } else {
+                res.writeHead(400, { 'Content-Type': 'text/plain' });
+                return res.end('Invalid body');
+            }
+
+            const newCount = userCount + change;
+            if (newCount < 0) {
+                res.writeHead(400, { 'Content-Type': 'text/plain' });
+                return res.end('Count cannot be negative');
+            }
+
+            userCount = newCount;
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end(userCount.toString());
+
+            // Queue the channel update
+            channelUpdateQueue.push(userCount);
+            processChannelUpdateQueue(wss);
+        } catch (error) {
+            logger.error('Error handling /userupdate.dataserver:', error);
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Internal Server Error');
+        }
+    });
 }
 
 async function handleGetKey(interaction) {
@@ -757,55 +872,6 @@ async function handleEdit(interaction) {
     }
 }
 
-client.once('ready', async () => {
-    logger.info(`Logged in as ${client.user.tag}`);
-    
-    // Scheduled cleanup
-    setInterval(async () => {
-        try {
-            const count = await keyManager.cleanExpiredKeys();
-            if (count > 0) {
-                logger.info(`Cleaned up ${count} expired keys`);
-                await sendKeysLuaToChannel();
-            }
-        } catch (error) {
-            logger.error('Error during scheduled cleanup:', error);
-        }
-    }, CONFIG.CLEANUP_INTERVAL_MINUTES * 60 * 1000);
-
-    // Scheduled backup
-    setInterval(async () => {
-        try {
-            await keyManager.saveData();
-            logger.info('Regular backup completed');
-        } catch (error) {
-            logger.error('Error during scheduled backup:', error);
-        }
-    }, CONFIG.BACKUP_INTERVAL_MINUTES * 60 * 1000);
-});
-
-client.on('disconnect', (event) => {
-    logger.warn(`Disconnected: ${event.reason} (${event.code})`);
-    keyManager.saveData().catch(error => {
-        logger.error('Error saving data on disconnect:', error);
-    });
-});
-
-client.on('reconnecting', () => {
-    logger.info('Attempting to reconnect...');
-});
-
-client.on('resume', (replayed) => {
-    logger.info(`Reconnected! Replayed ${replayed} events`);
-    keyManager.loadData().catch(error => {
-        logger.error('Error reloading data on resume:', error);
-    });
-});
-
-client.on('error', (error) => {
-    logger.error('Client error:', error);
-});
-
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
@@ -898,120 +964,53 @@ async function registerCommands() {
     }
 }
 
-let i = 0;
-
-function setupServer() {
-    const server = http.createServer(async (req, res) => {
-        try {
-            if (req.url === '/keepalive') {
-                res.writeHead(200, { 'Content-Type': 'text/plain' });
-                res.end('Bot is alive!');
-            } else if (req.url === '/userupdate.dataserver') {
-                if (req.method === "POST") {
-                    let body = '';
-                    req.on('data', chunk => {
-                        body += chunk.toString();
-                    });
-                    
-                    req.on('end', async () => {
-                        try {
-                            let shouldUpdateChannel = false;
-                            
-                            if (body === "1") {
-                                i = i + 1;
-                                shouldUpdateChannel = true;
-                                res.writeHead(200, { 'Content-Type': 'text/plain' });
-                                res.end(i.toString());
-                            } else if (body === "0") {
-                                i = i - 1;
-                                shouldUpdateChannel = true;
-                                res.writeHead(200, { 'Content-Type': 'text/plain' });
-                                res.end(i.toString());
-                            } else {
-                                res.writeHead(400, { 'Content-Type': 'text/plain' });
-                                res.end('Invalid body');
-                            }
-
-                            // Update Discord channel if counter changed
-                            if (shouldUpdateChannel) {
-                                try {
-                                    const channel = await client.channels.fetch('1356894488869736508');
-                                    if (channel) {
-                                        await channel.setName(`🌐▾🌐▾runtime : ${i}`);
-                                        logger.info(`Updated channel name to: 🌐▾runtime : ${i}`);
-                                    } else {
-                                        logger.error('Channel not found');
-                                    }
-                                } catch (error) {
-                                    logger.error('Failed to update channel:', error);
-                                }
-                            }
-                        } catch (error) {
-                            logger.error('Error handling /userupdate.dataserver:', error);
-                            res.writeHead(500, { 'Content-Type': 'text/plain' });
-                            res.end('Internal Server Error');
-                        }
-                    });
-                } else {
-                    res.writeHead(405, { 'Content-Type': 'text/plain' });
-                    res.end('Method Not Allowed');
-                }
-            } else if (req.url === '/keys.lua') {
-                const data = await fs.readFile(CONFIG.DATA_FILE, 'utf8');
-                res.writeHead(200, { 
-                    'Content-Type': 'application/x-lua',
-                    'Content-Disposition': 'attachment; filename=keys.lua'
-                });
-                res.end(data);
-            } else {
-                res.writeHead(404, { 'Content-Type': 'text/plain' });
-                res.end('Not Found');
-            }
-        } catch (error) {
-            logger.error('HTTP server error:', error);
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end('Internal Server Error');
-        }
-    });
-
-    server.listen(CONFIG.SERVER_PORT, () => {
-        logger.info(`Server running on port ${CONFIG.SERVER_PORT}`);
-    });
-
-    // Keepalive ping
-    setInterval(() => {
-        http.get(`http://localhost:${CONFIG.SERVER_PORT}/keepalive`, (res) => {
-            logger.debug('Keepalive ping successful');
-        }).on('error', (err) => {
-            logger.error('Keepalive ping failed:', err.message);
-        });
-    }, 10 * 60 * 1000);
-}
-
+// Initialize the bot
 async function initialize() {
     try {
-        logger.info('Validating configuration...');
-        if (CONFIG.KEY_EXPIRATION_DAYS <= 0) {
-            throw new Error('KEY_EXPIRATION_DAYS must be positive');
-        }
+        // Load initial user count
+        await loadUserCount();
 
+        // Setup WebSocket server
+        const wss = setupWebSocketServer();
+
+        // Setup HTTP server
+        const server = http.createServer(async (req, res) => {
+            try {
+                if (req.url === '/keepalive') {
+                    res.writeHead(200, { 'Content-Type': 'text/plain' });
+                    res.end('Bot is alive!');
+                } else if (req.url === '/userupdate.dataserver') {
+                    await handleUserUpdate(req, res, wss);
+                } else if (req.url === '/keys.lua') {
+                    const data = await fs.readFile(CONFIG.DATA_FILE, 'utf8');
+                    res.writeHead(200, { 
+                        'Content-Type': 'application/x-lua',
+                        'Content-Disposition': 'attachment; filename=keys.lua'
+                    });
+                    res.end(data);
+                } else {
+                    res.writeHead(404, { 'Content-Type': 'text/plain' });
+                    res.end('Not Found');
+                }
+            } catch (error) {
+                logger.error('HTTP server error:', error);
+                res.writeHead(500, { 'Content-Type': 'text/plain' });
+                res.end('Internal Server Error');
+            }
+        });
+
+        server.listen(CONFIG.SERVER_PORT, () => {
+            logger.info(`HTTP server running on port ${CONFIG.SERVER_PORT}`);
+        });
+
+        // Initial channel update
+        setTimeout(() => {
+            channelUpdateQueue.push(userCount);
+            processChannelUpdateQueue(wss);
+        }, 5000);
+
+        // Register commands and login
         await registerCommands();
-        setupServer();
-        
-        process.on('SIGINT', async () => {
-            logger.info('Shutting down gracefully...');
-            await keyManager.saveData();
-            client.destroy();
-            process.exit(0);
-        });
-
-        process.on('SIGTERM', async () => {
-            logger.info('Shutting down gracefully...');
-            await keyManager.saveData();
-            client.destroy();
-            process.exit(0);
-        });
-
         await client.login(process.env.TOKEN);
     } catch (error) {
         logger.error('Initialization error:', error);
@@ -1019,4 +1018,48 @@ async function initialize() {
     }
 }
 
+// Load user count from file
+async function loadUserCount() {
+    try {
+        const data = await fs.readFile('usercount.json', 'utf8');
+        userCount = JSON.parse(data).count || 0;
+        logger.info(`Loaded user count: ${userCount}`);
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            logger.error('Error loading user count:', error);
+        }
+    }
+}
+
+// Save user count to file
+async function saveUserCount() {
+    try {
+        await fs.writeFile('usercount.json', JSON.stringify({ count: userCount }));
+        logger.debug('Saved user count');
+    } catch (error) {
+        logger.error('Error saving user count:', error);
+    }
+}
+
+// Start the bot
 initialize();
+
+// Save user count periodically
+setInterval(saveUserCount, 60000);
+
+// Clean exit handler
+process.on('SIGINT', async () => {
+    logger.info('Shutting down gracefully...');
+    await keyManager.saveData();
+    await saveUserCount();
+    client.destroy();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    logger.info('Shutting down gracefully...');
+    await keyManager.saveData();
+    await saveUserCount();
+    client.destroy();
+    process.exit(0);
+});
