@@ -264,6 +264,10 @@ async function sendKeysLuaToChannel() {
 async function handleGetKey(interaction) {
     const hwid = interaction.options.getString('hwid');
     const userId = interaction.user.id;
+    const userHwid = interaction.options.getString("hwid");
+    if (!userHwid || (userHwid.match(/~/g) || []).length < 4) {
+      return interaction.reply({ content: "Invalid HWID", ephemeral: true });
+    }
 
     try {
         if (!interaction.deferred && !interaction.replied) {
@@ -375,7 +379,7 @@ async function handleCheckList(interaction) {
                 'Current Keys (Continued)',
                 chunks[i].join('')
             );
-            await interaction.followUp({ embeds: [extraEmbed] });
+            await interaction.deferReply({ embeds: [extraEmbed] });
         }
     } catch (error) {
         await interaction.editReply({ 
@@ -419,6 +423,50 @@ async function handleAddKey(interaction) {
     } catch (error) {
         await interaction.editReply({ 
             content: `❌ Error: ${error.message}`
+        });
+    }
+}
+
+async function handleedit(interaction) {
+    try {
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ ephemeral: true });
+        }
+
+        const newHwid = interaction.options.getString("newhwid");
+        const userId = interaction.user.id;
+        
+        // Find the user's existing key
+        const existingKey = keyManager.getKeyByUserId(userId);
+        
+        if (!existingKey) {
+            return interaction.editReply({ 
+                content: "You don't have an existing key to edit.", 
+                ephemeral: true 
+            });
+        }
+        
+        if (keyManager.getKeyByHwid(newHwid) && keyManager.getKeyByHwid(newHwid) !== existingKey) {
+            return interaction.editReply({ 
+            content: "This HWID was just taken, try again.", 
+            ephemeral: true 
+        });
+        }
+
+
+        keyManager.data[existingKey].hwid = newHwid;
+        await keyManager.saveData();
+        
+        await sendKeysLuaToChannel();
+        return interaction.editReply({ 
+            content: `✅ HWID updated successfully to: ${newHwid}`, 
+            ephemeral: true 
+        });
+    } catch (error) {
+        console.error('Error in edit command:', error);
+        await interaction.editReply({ 
+            content: `❌ Error: ${error.message}`,
+            ephemeral: true
         });
     }
 }
@@ -487,6 +535,9 @@ client.on('interactionCreate', async interaction => {
             case 'addkey':
                 await handleAddKey(interaction);
                 break;
+            case 'edit':
+                await handleedit(interaction);
+                break;
             default:
                 await interaction.followUp({ 
                     content: 'Unknown command',
@@ -524,13 +575,22 @@ async function registerCommands() {
             .setName('checklist')
             .setDescription('List all active keys'),
         new SlashCommandBuilder()
-            .setName('addkey')
-            .setDescription('Import keys from a keys.lua file (Admin only)')
-            .addAttachmentOption(option =>
-                option.setName('file')
-                    .setDescription('The keys.lua file to import')
-                    .setRequired(true)
-            )
+        .setName('addkey')
+        .setDescription('Import keys from a keys.lua file (Admin only)')
+        .addAttachmentOption(option =>
+            option.setName('file')
+                .setDescription('The keys.lua file to import')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('edit')
+        .setDescription('Update your HWID')
+        .addStringOption(option => 
+            option.setName('newhwid')
+                .setDescription('Your new HWID')
+                .setRequired(true)
+        )
     ].map(command => command.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
