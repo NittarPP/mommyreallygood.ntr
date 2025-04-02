@@ -619,25 +619,42 @@ async function handleCheckList(interaction) {
 }
 
 async function handleAddKey(interaction) {
+    // Immediate permission check
     if (!interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
-        return interaction.reply({ 
-            content: '❌ You do not have permission to use this command.',
-            ephemeral: true 
-        }).catch(error => logger.error('Reply failed:', error));
+        try {
+            return await interaction.reply({ 
+                content: '❌ You do not have permission to use this command.',
+                ephemeral: true 
+            });
+        } catch (error) {
+            logger.error('Permission check reply failed:', error);
+            return;
+        }
     }
 
+    // Validate attachment
     const attachment = interaction.options.getAttachment('file');
     if (!attachment || !attachment.name.endsWith('.lua')) {
-        return interaction.reply({ 
-            content: '❌ Please attach a valid .lua file.',
-            ephemeral: true 
-        }).catch(error => logger.error('Reply failed:', error));
+        try {
+            return await interaction.reply({ 
+                content: '❌ Please attach a valid .lua file.',
+                ephemeral: true 
+            });
+        } catch (error) {
+            logger.error('Attachment validation reply failed:', error);
+            return;
+        }
+    }
+
+    // Defer the reply immediately
+    try {
+        await interaction.deferReply({ ephemeral: true });
+    } catch (error) {
+        logger.error('Failed to defer reply:', error);
+        return;
     }
 
     try {
-        // Defer the reply first
-        await interaction.deferReply({ ephemeral: true });
-
         const response = await fetch(attachment.url);
         if (!response.ok) throw new Error('Failed to download file');
         
@@ -646,22 +663,39 @@ async function handleAddKey(interaction) {
         
         await sendKeysLuaToChannel();
         
-        await interaction.editReply({ 
-            content: `✅ Successfully imported ${importedKeys.length} keys.`
-        }).catch(error => logger.error('Edit reply failed:', error));
+        try {
+            await interaction.editReply({ 
+                content: `✅ Successfully imported ${importedKeys.length} keys.`
+            });
+        } catch (editError) {
+            logger.error('Failed to edit reply:', editError);
+            // Attempt fallback response
+            try {
+                await interaction.followUp({ 
+                    content: `✅ Successfully imported ${importedKeys.length} keys.`,
+                    ephemeral: true 
+                });
+            } catch (followUpError) {
+                logger.error('Failed to follow up:', followUpError);
+            }
+        }
     } catch (error) {
         logger.error('Error in handleAddKey:', error);
         
-        if (interaction.deferred || interaction.replied) {
-            await interaction.followUp({ 
-                content: `❌ Error: ${error.message}`,
-                ephemeral: true 
-            }).catch(error => logger.error('FollowUp failed:', error));
-        } else {
-            await interaction.reply({ 
-                content: `❌ Error: ${error.message}`,
-                ephemeral: true 
-            }).catch(error => logger.error('Reply failed:', error));
+        try {
+            await interaction.editReply({ 
+                content: `❌ Error: ${error.message}`
+            });
+        } catch (editError) {
+            logger.error('Failed to edit error reply:', editError);
+            try {
+                await interaction.followUp({ 
+                    content: `❌ Error: ${error.message}`,
+                    ephemeral: true 
+                });
+            } catch (followUpError) {
+                logger.error('Failed to follow up error:', followUpError);
+            }
         }
     }
 }
