@@ -937,7 +937,7 @@ function setupServer() {
                                 try {
                                     const channel = await client.channels.fetch('1356894488869736508');
                                     if (channel) {
-                                        await channel.setName(`🌐▾user run : ${i}`);
+                                        await channel.setName(`🌐▾🌐▾runtime : ${i}`);
                                         logger.info(`Updated channel name to: 🌐▾runtime : ${i}`);
                                     } else {
                                         logger.error('Channel not found');
