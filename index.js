@@ -623,7 +623,7 @@ async function handleAddKey(interaction) {
         return interaction.reply({ 
             content: '❌ You do not have permission to use this command.',
             ephemeral: true 
-        });
+        }).catch(error => logger.error('Reply failed:', error));
     }
 
     const attachment = interaction.options.getAttachment('file');
@@ -631,10 +631,11 @@ async function handleAddKey(interaction) {
         return interaction.reply({ 
             content: '❌ Please attach a valid .lua file.',
             ephemeral: true 
-        });
+        }).catch(error => logger.error('Reply failed:', error));
     }
 
     try {
+        // Defer the reply first
         await interaction.deferReply({ ephemeral: true });
 
         const response = await fetch(attachment.url);
@@ -647,12 +648,21 @@ async function handleAddKey(interaction) {
         
         await interaction.editReply({ 
             content: `✅ Successfully imported ${importedKeys.length} keys.`
-        });
+        }).catch(error => logger.error('Edit reply failed:', error));
     } catch (error) {
         logger.error('Error in handleAddKey:', error);
-        await interaction.editReply({ 
-            content: `❌ Error: ${error.message}`
-        });
+        
+        if (interaction.deferred || interaction.replied) {
+            await interaction.followUp({ 
+                content: `❌ Error: ${error.message}`,
+                ephemeral: true 
+            }).catch(error => logger.error('FollowUp failed:', error));
+        } else {
+            await interaction.reply({ 
+                content: `❌ Error: ${error.message}`,
+                ephemeral: true 
+            }).catch(error => logger.error('Reply failed:', error));
+        }
     }
 }
 
