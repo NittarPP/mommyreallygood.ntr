@@ -205,12 +205,44 @@ class KeyManager {
     }
 
     isValidHwid(hwid) {
-        if (!hwid || typeof hwid !== 'string') return false;
-        const parts = hwid.split('~');
-        return parts.length >= 5 && 
-               parts.every(part => part.length > 0) &&
-               hwid.length <= CONFIG.MAX_HWID_LENGTH;
+    // Check if HWID is a string
+    if (typeof hwid !== 'string') {
+        logger.warn(`Invalid HWID type: ${typeof hwid}`);
+        return false;
     }
+
+    // Trim whitespace and convert to lowercase
+    const cleanHwid = hwid.trim().toLowerCase();
+
+    // UUID v4 validation regex
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    
+    // Test the format
+    const isValidFormat = uuidRegex.test(cleanHwid);
+    
+    if (!isValidFormat) {
+        logger.warn(`Invalid HWID format: ${hwid}`);
+        return false;
+    }
+
+    // Additional validation for UUID version/variant
+    try {
+        const parts = cleanHwid.split('-');
+        if (parts[2].substring(0, 1) !== '4') {
+            logger.warn(`Invalid UUID version in HWID: ${hwid}`);
+            return false;
+        }
+        if (!['8','9','a','b'].includes(parts[3].substring(0, 1))) {
+            logger.warn(`Invalid UUID variant in HWID: ${hwid}`);
+            return false;
+        }
+    } catch (e) {
+        logger.error(`Error validating HWID structure: ${e.message}`);
+        return false;
+    }
+
+    return true;
+}
 
     async addKey(userId, hwid) {
         if (!this.isValidHwid(hwid)) {
