@@ -427,48 +427,24 @@ async function handleAddKey(interaction) {
     }
 }
 
-async function handleedit(interaction) {
-    try {
-        if (!interaction.deferred && !interaction.replied) {
-            await interaction.deferReply({ ephemeral: true });
-        }
+async function handleEdit(interaction) {
+    await interaction.deferReply({ ephemeral: true });
 
-        const newHwid = interaction.options.getString("newhwid");
-        const userId = interaction.user.id;
-        
-        // Find the user's existing key
-        const existingKey = keyManager.getKeyByUserId(userId);
-        
-        if (!existingKey) {
-            return interaction.editReply({ 
-                content: "You don't have an existing key to edit.", 
-                ephemeral: true 
-            });
-        }
-        
-        if (keyManager.getKeyByHwid(newHwid) && keyManager.getKeyByHwid(newHwid) !== existingKey) {
-            return interaction.editReply({ 
-            content: "This HWID was just taken, try again.", 
-            ephemeral: true 
-        });
-        }
+    const newHwid = interaction.options.getString('newhwid');
+    const existingKey = keyManager.getKeyByUser(interaction.user.id);
 
-
-        keyManager.data[existingKey].hwid = newHwid;
-        await keyManager.saveData();
-        
-        await sendKeysLuaToChannel();
-        return interaction.editReply({ 
-            content: `✅ HWID updated successfully to: ${newHwid}`, 
-            ephemeral: true 
-        });
-    } catch (error) {
-        console.error('Error in edit command:', error);
-        await interaction.editReply({ 
-            content: `❌ Error: ${error.message}`,
-            ephemeral: true
-        });
+    if (!existingKey) {
+        return interaction.editReply({ content: 'You do not have a registered key.', ephemeral: true });
     }
+
+    if (keyManager.getKeyByHwid(newHwid)) {
+        return interaction.editReply({ content: 'This HWID is already in use by another key.', ephemeral: true });
+    }
+
+    existingKey.hwid = newHwid;
+    keyManager.saveKeys();
+
+    await interaction.editReply('Your HWID has been successfully updated!');
 }
 
 client.once('ready', async () => {
@@ -536,7 +512,7 @@ client.on('interactionCreate', async interaction => {
                 await handleAddKey(interaction);
                 break;
             case 'edit':
-                await handleedit(interaction);
+                await handleEdit(interaction);
                 break;
             default:
                 await interaction.followUp({ 
