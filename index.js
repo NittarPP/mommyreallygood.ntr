@@ -4,7 +4,6 @@ const path = require('path');
 const { randomBytes } = require('node:crypto');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const http = require('http');
-const { createLogger, transports, format } = require('winston');
 
 // Enhanced Configuration
 const CONFIG = {
@@ -32,17 +31,12 @@ const CONFIG = {
 };
 
 // Setup structured logging
-const logger = createLogger({
-    level: 'info',
-    format: format.combine(
-        format.timestamp(),
-        format.json()
-    ),
-    transports: [
-        new transports.Console(),
-        new transports.File({ filename: 'bot.log' })
-    ]
-});
+const logger = {
+    info: (...args) => console.log(`[INFO] ${new Date().toISOString()}`, ...args),
+    warn: (...args) => console.warn(`[WARN] ${new Date().toISOString()}`, ...args),
+    error: (...args) => console.error(`[ERROR] ${new Date().toISOString()}`, ...args),
+    debug: (...args) => console.debug(`[DEBUG] ${new Date().toISOString()}`, ...args)
+};
 
 // Validate environment variables
 if (!process.env.TOKEN || !process.env.CLIENT_ID) {
@@ -856,7 +850,7 @@ function setupServer() {
 
 async function initialize() {
     try {
-        // Validate configuration
+        logger.info('Validating configuration...');
         if (CONFIG.KEY_EXPIRATION_DAYS <= 0) {
             throw new Error('KEY_EXPIRATION_DAYS must be positive');
         }
@@ -864,7 +858,6 @@ async function initialize() {
         await registerCommands();
         setupServer();
         
-        // Graceful shutdown handlers
         process.on('SIGINT', async () => {
             logger.info('Shutting down gracefully...');
             await keyManager.saveData();
