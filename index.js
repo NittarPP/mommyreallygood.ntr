@@ -507,17 +507,18 @@ async function handleCheckList(interaction) {
         return interaction.reply({ 
             content: '❌ You do not have permission to use this command.',
             ephemeral: true 
-        });
+        }).catch(logger.error);
     }
 
     try {
+        // Defer the reply immediately to avoid timeout issues
         await interaction.deferReply({ ephemeral: true });
 
         const keys = keyManager.getAllKeys();
         if (keys.length === 0) {
             return interaction.editReply({ 
                 content: 'ℹ️ No keys found in the database.'
-            });
+            }).catch(logger.error);
         }
 
         // Sort by expiration date (soonest first)
@@ -536,7 +537,7 @@ async function handleCheckList(interaction) {
                 `Active Keys (Page ${page}/${totalPages})`,
                 `Total keys: ${keys.length}\n\n` +
                 pageKeys.map(k => 
-                    `**Key**: \`${k.key}\`\n` +
+                    `**Key**: \`||${k.key}||\`\n` +
                     `**User**: <@${k.userId}>\n` +
                     `**HWID**: ||${k.hwid}||\n` +
                     `**Created**: ${formatExpirationTime(k.createdAt)}\n` +
@@ -564,8 +565,12 @@ async function handleCheckList(interaction) {
         const response = await interaction.editReply({ 
             embeds: [embed], 
             components: [row] 
+        }).catch(error => {
+            logger.error('Failed to edit reply:', error);
+            throw error;
         });
 
+        // Create collector with proper error handling
         const collector = response.createMessageComponentCollector({ 
             time: 60000 
         });
@@ -575,33 +580,39 @@ async function handleCheckList(interaction) {
                 return i.reply({ 
                     content: '❌ You cannot control this pagination.', 
                     ephemeral: true 
-                });
+                }).catch(logger.error);
             }
 
-            if (i.customId === 'prev_page') {
-                currentPage--;
-            } else if (i.customId === 'next_page') {
-                currentPage++;
+            try {
+                await i.deferUpdate();
+                
+                if (i.customId === 'prev_page') {
+                    currentPage--;
+                } else if (i.customId === 'next_page') {
+                    currentPage++;
+                }
+
+                const updatedEmbed = createListEmbed(currentPage);
+                const updatedRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('prev_page')
+                        .setLabel('Previous')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(currentPage === 1),
+                    new ButtonBuilder()
+                        .setCustomId('next_page')
+                        .setLabel('Next')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(currentPage === totalPages)
+                );
+
+                await i.editReply({ 
+                    embeds: [updatedEmbed], 
+                    components: [updatedRow] 
+                }).catch(logger.error);
+            } catch (error) {
+                logger.error('Error handling pagination:', error);
             }
-
-            const updatedEmbed = createListEmbed(currentPage);
-            const updatedRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('prev_page')
-                    .setLabel('Previous')
-                    .setStyle(ButtonStyle.Primary)
-                    .setDisabled(currentPage === 1),
-                new ButtonBuilder()
-                    .setCustomId('next_page')
-                    .setLabel('Next')
-                    .setStyle(ButtonStyle.Primary)
-                    .setDisabled(currentPage === totalPages)
-            );
-
-            await i.update({ 
-                embeds: [updatedEmbed], 
-                components: [updatedRow] 
-            });
         });
 
         collector.on('end', () => {
@@ -612,9 +623,10 @@ async function handleCheckList(interaction) {
 
     } catch (error) {
         logger.error('Error in handleCheckList:', error);
-        await interaction.editReply({ 
-            content: '❌ An error occurred while fetching the key list.'
-        });
+        interaction.followUp({ 
+            content: '❌ An error occurred while fetching the key list.',
+            ephemeral: true 
+        }).catch(logger.error);
     }
 }
 
