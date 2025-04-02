@@ -898,12 +898,64 @@ async function registerCommands() {
     }
 }
 
+let i = 0;
+
 function setupServer() {
     const server = http.createServer(async (req, res) => {
         try {
             if (req.url === '/keepalive') {
                 res.writeHead(200, { 'Content-Type': 'text/plain' });
                 res.end('Bot is alive!');
+            } else if (req.url === '/userupdate.dataserver') {
+                if (req.method === "POST") {
+                    let body = '';
+                    req.on('data', chunk => {
+                        body += chunk.toString();
+                    });
+                    
+                    req.on('end', async () => {
+                        try {
+                            let shouldUpdateChannel = false;
+                            
+                            if (body === "1") {
+                                i = i + 1;
+                                shouldUpdateChannel = true;
+                                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                                res.end(i.toString());
+                            } else if (body === "0") {
+                                i = i - 1;
+                                shouldUpdateChannel = true;
+                                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                                res.end(i.toString());
+                            } else {
+                                res.writeHead(400, { 'Content-Type': 'text/plain' });
+                                res.end('Invalid body');
+                            }
+
+                            // Update Discord channel if counter changed
+                            if (shouldUpdateChannel) {
+                                try {
+                                    const channel = await client.channels.fetch('1356894488869736508');
+                                    if (channel) {
+                                        await channel.setName(`🌐▾user run : ${i}`);
+                                        logger.info(`Updated channel name to: 🌐▾runtime : ${i}`);
+                                    } else {
+                                        logger.error('Channel not found');
+                                    }
+                                } catch (error) {
+                                    logger.error('Failed to update channel:', error);
+                                }
+                            }
+                        } catch (error) {
+                            logger.error('Error handling /userupdate.dataserver:', error);
+                            res.writeHead(500, { 'Content-Type': 'text/plain' });
+                            res.end('Internal Server Error');
+                        }
+                    });
+                } else {
+                    res.writeHead(405, { 'Content-Type': 'text/plain' });
+                    res.end('Method Not Allowed');
+                }
             } else if (req.url === '/keys.lua') {
                 const data = await fs.readFile(CONFIG.DATA_FILE, 'utf8');
                 res.writeHead(200, { 
