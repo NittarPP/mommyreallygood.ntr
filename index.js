@@ -536,7 +536,7 @@ async function processChannelUpdateQueue(wss) {
         logger.error('Failed to update channel:', error);
         if (channelUpdateQueue.length === 0) {
             channelUpdateQueue.push(latestCount);
-            setTimeout(() => processChannelUpdateQueue(wss), 5000);
+            setTimeout(() => processChannelUpdateQueue(wss), 100);
         }
     } finally {
         isUpdatingChannel = false;
@@ -970,9 +970,7 @@ async function checkExpirations() {
     
     // Define warning intervals (in milliseconds)
     const warningIntervals = {
-        oneHour: 60 * 60 * 1000,       // 1 hour
-        oneDay: 24 * 60 * 60 * 1000,   // 1 day
-        threeDays: 3 * 24 * 60 * 60 * 1000 // 3 days
+        oneHour: 60 * 60 * 1000
     };
 
     for (const key of keys) {
@@ -990,24 +988,6 @@ async function checkExpirations() {
             // Mark as notified
             if (!key.notified) key.notified = {};
             key.notified.oneHour = true;
-            await keyManager.saveData();
-        }
-        else if (timeUntilExpiration < warningIntervals.oneDay && !key.notified?.oneDay) {
-            await notifyUser(key.userId,
-                `⚠️ Warning: Your key expires in less than 24 hours! ` +
-                `Use \`/renew\` to extend your access.`);
-            
-            if (!key.notified) key.notified = {};
-            key.notified.oneDay = true;
-            await keyManager.saveData();
-        }
-        else if (timeUntilExpiration < warningIntervals.threeDays && !key.notified?.threeDays) {
-            await notifyUser(key.userId,
-                `ℹ️ Reminder: Your key expires in ${Math.ceil(timeUntilExpiration/warningIntervals.oneDay)} days. ` +
-                `Consider using \`/renew\` soon.`);
-            
-            if (!key.notified) key.notified = {};
-            key.notified.threeDays = true;
             await keyManager.saveData();
         }
     }
@@ -1220,7 +1200,7 @@ async function initialize() {
         setTimeout(() => {
             channelUpdateQueue.push(userCount);
             processChannelUpdateQueue(wss);
-        }, 5000);
+        }, 100);
 
         // Register commands and login
         await registerCommands();
