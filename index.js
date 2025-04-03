@@ -31,6 +31,10 @@ const CONFIG = {
         MAX_HWID_CHANGES: 15,
         KEY_REGENERATION_LIMIT: 24 // hours
     },
+    RENEWAL: {
+        COOLDOWN_HOURS: 12,
+        EARLY_RENEWAL_DAYS: 1
+    },
     LIST_PAGE_SIZE: 5
 };
 
@@ -274,6 +278,36 @@ class KeyManager {
         return { key, expiresAt };
     }
 
+    async renewKey(userId, hwid) {
+        try {
+          if (!userId || !hwid) {
+            throw new Error('UserId and HWID are required');
+          }
+    
+          // Find the key for this user
+          const key = Object.keys(this.data).find(
+            k => this.data[k].userId === userId && this.data[k].hwid === hwid
+          );
+    
+          if (!key) {
+            throw new Error('Key not found for this user and HWID');
+          }
+    
+          const now = new Date();
+          const newExpiration = new Date();
+          newExpiration + 86400000;
+    
+          // Update the key
+          this.data[key].expiresAt = newExpiration;
+          this.data[key].createdAt = now;
+    
+          return true;
+        } catch (error) {
+          console.error(`Failed to renew key for user ${userId}:`, error);
+          throw error; // Re-throw for the caller to handle
+        }
+      }
+
     async removeKey(userId) {
         const key = this.getKeyByUserId(userId);
         if (!key) return false;
@@ -383,6 +417,42 @@ class KeyManager {
 
 const keyManager = new KeyManager();
 const rateLimiter = new RateLimiter();
+
+async function notifyUser(userId, message) {
+    try {
+        const user = await client.users.fetch(userId);
+        
+        // Create an embed for better visibility
+        const embed = new EmbedBuilder()
+            .setColor(0xFFA500) // Orange for warnings
+            .setTitle('Key Expiration Notice')
+            .setDescription(message)
+            .setTimestamp();
+        
+        // Try regular DM first
+        try {
+            await user.send({ embeds: [embed] });
+            return true;
+        } catch (dmError) {
+            logger.warn(`Could not DM user ${userId}, trying fallback...`);
+            
+            // Fallback to channel message if user has DMs disabled
+            const channel = await client.channels.fetch(CONFIG.KEY_CHANNEL_ID);
+            if (channel) {
+                await channel.send({
+                    content: `<@${userId}>`,
+                    embeds: [embed],
+                    allowedMentions: { users: [userId] }
+                });
+                return true;
+            }
+            return false;
+        }
+    } catch (error) {
+        logger.error(`Notification failed for user ${userId}:`, error);
+        return false;
+    }
+}
 
 function formatExpirationTime(timestamp) {
     return new Date(timestamp).toLocaleString();
@@ -872,20 +942,129 @@ async function handleEdit(interaction) {
     }
 }
 
-async function checkExpirations() {
-    const now = Date.now();
-    const warningPeriod = 3 * 24 * 60 * 60 * 1000; // 3 days
+async function handleKeyInfo(interaction) {
+    const userId = interaction.user.id;
+    const keyData = keyManager.getKeyData(userId);
     
-    for (const [key, data] of Object.entries(keyManager.data)) {
-        if (data.expiresAt - now < warningPeriod && !data.warned) {
-            try {
-                const user = await client.users.fetch(data.userId);
-                await user.send(`Your key expires soon! Renew before ${formatExpirationTime(data.expiresAt)}`);
-                data.warned = true;
-            } catch (error) {
-                logger.error(`Failed to notify user ${data.userId}`, error);
-            }
+    if (!keyData) {
+        return interaction.reply({ 
+            content: 'You do not have an active key.',
+            ephemeral: true 
+        });
+    }
+    
+    const embed = createEmbed(
+        'Your Key Information',
+        `**Expires**: ${formatExpirationTime(keyData.expiresAt)}\n` +
+        `**HWID**: ||${keyData.hwid}||\n` +
+        `**Created**: ${formatExpirationTime(keyData.createdAt)}`,
+        0x00FF00
+    );
+    
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function checkExpirations() {
+    const keys = keyManager.getAllKeys();
+    const now = Date.now();
+    
+    // Define warning intervals (in milliseconds)
+    const warningIntervals = {
+        oneHour: 60 * 60 * 1000,       // 1 hour
+        oneDay: 24 * 60 * 60 * 1000,   // 1 day
+        threeDays: 3 * 24 * 60 * 60 * 1000 // 3 days
+    };
+
+    for (const key of keys) {
+        const timeUntilExpiration = key.expiresAt - now;
+        
+        // Skip already expired keys
+        if (timeUntilExpiration <= 0) continue;
+
+        // Send appropriate warnings
+        if (timeUntilExpiration < warningIntervals.oneHour && !key.notified?.oneHour) {
+            await notifyUser(key.userId,
+                `⚠️ URGENT: Your key expires in less than 1 hour! ` +
+                `Use \`/renew\` immediately to prevent access loss.`);
+            
+            // Mark as notified
+            if (!key.notified) key.notified = {};
+            key.notified.oneHour = true;
+            await keyManager.saveData();
         }
+        else if (timeUntilExpiration < warningIntervals.oneDay && !key.notified?.oneDay) {
+            await notifyUser(key.userId,
+                `⚠️ Warning: Your key expires in less than 24 hours! ` +
+                `Use \`/renew\` to extend your access.`);
+            
+            if (!key.notified) key.notified = {};
+            key.notified.oneDay = true;
+            await keyManager.saveData();
+        }
+        else if (timeUntilExpiration < warningIntervals.threeDays && !key.notified?.threeDays) {
+            await notifyUser(key.userId,
+                `ℹ️ Reminder: Your key expires in ${Math.ceil(timeUntilExpiration/warningIntervals.oneDay)} days. ` +
+                `Consider using \`/renew\` soon.`);
+            
+            if (!key.notified) key.notified = {};
+            key.notified.threeDays = true;
+            await keyManager.saveData();
+        }
+    }
+}
+
+async function handleEmergencyRenew(interaction) {
+    const hwid = interaction.options.getString('hwid');
+    const userId = interaction.user.id;
+    
+    try {
+        await interaction.deferReply({ ephemeral: true });
+        
+        const keyData = keyManager.getKeyData(userId);
+        if (!keyData) {
+            return interaction.editReply('❌ You do not have an active key.');
+        }
+        
+        const timeLeft = keyData.expiresAt - Date.now();
+        if (timeLeft > 60 * 60 * 1000) {
+            return interaction.editReply(
+                '❌ Your key has more than 1 hour remaining. ' +
+                'Use `/renew` instead.'
+            );
+        }
+        
+        // Process renewal with shorter cooldown
+        const { key, expiresAt } = await keyManager.renewKey(userId, hwid);
+        
+        await interaction.editReply(
+            `✅ EMERGENCY RENEWAL COMPLETE!\n` +
+            `New expiration: ${formatExpirationTime(expiresAt)}\n` +
+            `Check your DMs for details.`
+        );
+        
+        // Send DM confirmation
+        try {
+            await interaction.user.send({
+                content: `**EMERGENCY RENEWAL PROCESSED**`,
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor(0xFF0000)
+                        .setTitle('Key Emergency Renewal')
+                        .addFields(
+                            { name: 'Key', value: `\`${key}\``, inline: true },
+                            { name: 'New Expiration', value: formatExpirationTime(expiresAt), inline: true }
+                        )
+                        .setFooter({ text: 'This renewal had special processing due to imminent expiration' })
+                ]
+            });
+        } catch (dmError) {
+            logger.warn('Could not send emergency renewal DM:', dmError);
+        }
+        
+        await sendKeysLuaToChannel();
+    } catch (error) {
+        await interaction.editReply(`❌ Error: ${error.message}`);
+        logger.error('Emergency renew failed:', error);
     }
 }
 
@@ -908,6 +1087,12 @@ client.on('interactionCreate', async interaction => {
                 break;
             case 'edit':
                 await handleEdit(interaction);
+                break;
+            case 'keyinfo':
+                await handleKeyInfo(interaction);
+                break;
+            case 'emergencyrenew':
+                await handleEmergencyRenew(interaction);
                 break;
             default:
                 await interaction.reply({ 
@@ -952,12 +1137,23 @@ async function registerCommands() {
         new SlashCommandBuilder()
             .setName('checklist')
             .setDescription('List all active keys (Admin only)'),
+            new SlashCommandBuilder()
+            .setName('KeyInfo')
+            .setDescription('Your Key Info'),
         new SlashCommandBuilder()
             .setName('addkey')
             .setDescription('Import keys from a keys.lua file (Admin only)')
             .addAttachmentOption(option =>
                 option.setName('file')
                     .setDescription('The keys.lua file to import')
+                    .setRequired(true)
+            ),
+        new SlashCommandBuilder()
+            .setName('emergencyrenew')
+            .setDescription('Renew your key when it has less than 1 hour remaining')
+            .addStringOption(option => 
+                option.setName('hwid')
+                    .setDescription('Your current HWID')
                     .setRequired(true)
             ),
         new SlashCommandBuilder()
@@ -1063,7 +1259,10 @@ initialize();
 // Save user count periodically
 setInterval(saveUserCount, 100);
 
-setInterval(checkExpirations, 24 * 60;
+setInterval(() => {
+    checkExpirations();
+    keyManager.cleanExpiredKeys();
+}, 1 * 60 * 1000); // Check every 1 minutes instead of hourly
 
 // Clean exit handler
 process.on('SIGINT', async () => {
