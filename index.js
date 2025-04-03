@@ -23,7 +23,7 @@ const CONFIG = {
     MAX_HWID_LENGTH: 255,
     RATE_LIMITS: {
         GET_KEY: { count: 1, window: 3600000 }, // 1 per hour
-        EDIT_HWID: { count: 15, window: 86400000 }, // 3 per day
+        EDIT_HWID: { count: 15, window: 86400000 }, // 15 per day
         USER_UPDATE: { count: 10, window: 100 } // 10 per second
     },
     SECURITY: {
@@ -872,6 +872,23 @@ async function handleEdit(interaction) {
     }
 }
 
+async function checkExpirations() {
+    const now = Date.now();
+    const warningPeriod = 3 * 24 * 60 * 60 * 1000; // 3 days
+    
+    for (const [key, data] of Object.entries(keyManager.data)) {
+        if (data.expiresAt - now < warningPeriod && !data.warned) {
+            try {
+                const user = await client.users.fetch(data.userId);
+                await user.send(`Your key expires soon! Renew before ${formatExpirationTime(data.expiresAt)}`);
+                data.warned = true;
+            } catch (error) {
+                logger.error(`Failed to notify user ${data.userId}`, error);
+            }
+        }
+    }
+}
+
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
@@ -1045,6 +1062,8 @@ initialize();
 
 // Save user count periodically
 setInterval(saveUserCount, 100);
+
+setInterval(checkExpirations, 24 * 60;
 
 // Clean exit handler
 process.on('SIGINT', async () => {
