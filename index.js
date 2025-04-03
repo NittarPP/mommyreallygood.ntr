@@ -23,12 +23,12 @@ const CONFIG = {
     MAX_HWID_LENGTH: 255,
     RATE_LIMITS: {
         GET_KEY: { count: 1, window: 3600000 }, // 1 per hour
-        EDIT_HWID: { count: 3, window: 86400000 }, // 3 per day
-        USER_UPDATE: { count: 10, window: 1000 } // 10 per second
+        EDIT_HWID: { count: 15, window: 86400000 }, // 3 per day
+        USER_UPDATE: { count: 10, window: 100 } // 10 per second
     },
     SECURITY: {
-        MAX_KEYS_PER_USER: 1,
-        MAX_HWID_CHANGES: 3,
+        MAX_KEYS_PER_USER: 5,
+        MAX_HWID_CHANGES: 15,
         KEY_REGENERATION_LIMIT: 24 // hours
     },
     LIST_PAGE_SIZE: 5
@@ -1035,7 +1035,6 @@ async function loadUserCount() {
 async function saveUserCount() {
     try {
         await fs.writeFile('usercount.json', JSON.stringify({ count: userCount }));
-        logger.debug('Saved user count');
     } catch (error) {
         logger.error('Error saving user count:', error);
     }
@@ -1045,7 +1044,7 @@ async function saveUserCount() {
 initialize();
 
 // Save user count periodically
-setInterval(saveUserCount, 60000);
+setInterval(saveUserCount, 100);
 
 // Clean exit handler
 process.on('SIGINT', async () => {
