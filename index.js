@@ -1137,8 +1137,8 @@ async function registerCommands() {
         new SlashCommandBuilder()
             .setName('checklist')
             .setDescription('List all active keys (Admin only)'),
-            new SlashCommandBuilder()
-            .setName('KeyInfo')
+        new SlashCommandBuilder()
+            .setName('keyinfo')
             .setDescription('Your Key Info'),
         new SlashCommandBuilder()
             .setName('addkey')
