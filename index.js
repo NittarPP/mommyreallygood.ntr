@@ -964,90 +964,6 @@ async function handleKeyInfo(interaction) {
     await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
-async function checkExpirations() {
-    const keys = keyManager.getAllKeys();
-    const now = Date.now();
-    
-    // Define warning intervals (in milliseconds)
-    const warningIntervals = {
-        oneHour: 60 * 60 * 1000
-    };
-
-    for (const key of keys) {
-        const timeUntilExpiration = key.expiresAt - now;
-        
-        // Skip already expired keys
-        if (timeUntilExpiration <= 0) continue;
-
-        // Send appropriate warnings
-        if (timeUntilExpiration < warningIntervals.oneHour && !key.notified?.oneHour) {
-            await notifyUser(key.userId,
-                `⚠️ URGENT: Your key expires in less than 1 hour! ` +
-                `Use \`/renew\` immediately to prevent access loss.`);
-            
-            // Mark as notified
-            if (!key.notified) key.notified = {};
-            key.notified.oneHour = true;
-            await keyManager.saveData();
-        }
-    }
-}
-
-async function handleEmergencyRenew(interaction) {
-    const hwid = interaction.options.getString('hwid');
-    const userId = interaction.user.id;
-    
-    try {
-        await interaction.deferReply({ ephemeral: true });
-        
-        const keyData = keyManager.getKeyData(userId);
-        if (!keyData) {
-            return interaction.editReply('❌ You do not have an active key.');
-        }
-        
-        const timeLeft = keyData.expiresAt - Date.now();
-        if (timeLeft > 60 * 60 * 1000) {
-            return interaction.editReply(
-                '❌ Your key has more than 1 hour remaining. ' +
-                'Use `/renew` instead.'
-            );
-        }
-        
-        // Process renewal with shorter cooldown
-        const { key, expiresAt } = await keyManager.renewKey(userId, hwid);
-        
-        await interaction.editReply(
-            `✅ EMERGENCY RENEWAL COMPLETE!\n` +
-            `New expiration: ${formatExpirationTime(expiresAt)}\n` +
-            `Check your DMs for details.`
-        );
-        
-        // Send DM confirmation
-        try {
-            await interaction.user.send({
-                content: `**EMERGENCY RENEWAL PROCESSED**`,
-                embeds: [
-                    new EmbedBuilder()
-                        .setColor(0xFF0000)
-                        .setTitle('Key Emergency Renewal')
-                        .addFields(
-                            { name: 'Key', value: `\`${key}\``, inline: true },
-                            { name: 'New Expiration', value: formatExpirationTime(expiresAt), inline: true }
-                        )
-                        .setFooter({ text: 'This renewal had special processing due to imminent expiration' })
-                ]
-            });
-        } catch (dmError) {
-            logger.warn('Could not send emergency renewal DM:', dmError);
-        }
-        
-        await sendKeysLuaToChannel();
-    } catch (error) {
-        await interaction.editReply(`❌ Error: ${error.message}`);
-        logger.error('Emergency renew failed:', error);
-    }
-}
-
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
 
@@ -1070,9 +986,6 @@ client.on('interactionCreate', async interaction => {
                 break;
             case 'keyinfo':
                 await handleKeyInfo(interaction);
-                break;
-            case 'emergencyrenew':
-                await handleEmergencyRenew(interaction);
                 break;
             default:
                 await interaction.reply({ 
@@ -1126,14 +1039,6 @@ async function registerCommands() {
             .addAttachmentOption(option =>
                 option.setName('file')
                     .setDescription('The keys.lua file to import')
-                    .setRequired(true)
-            ),
-        new SlashCommandBuilder()
-            .setName('emergencyrenew')
-            .setDescription('Renew your key when it has less than 1 hour remaining')
-            .addStringOption(option => 
-                option.setName('hwid')
-                    .setDescription('Your current HWID')
                     .setRequired(true)
             ),
         new SlashCommandBuilder()
@@ -1238,11 +1143,6 @@ initialize();
 
 // Save user count periodically
 setInterval(saveUserCount, 100);
-
-setInterval(() => {
-    checkExpirations();
-    keyManager.cleanExpiredKeys();
-}, 1 * 60 * 1000); // Check every 1 minutes instead of hourly
 
 // Clean exit handler
 process.on('SIGINT', async () => {
