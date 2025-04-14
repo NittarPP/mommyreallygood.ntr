@@ -45,7 +45,6 @@ async function loadUserCount() {
 async function saveUserCount() {
     try {
         await fs.writeFile('usercount.json', JSON.stringify({ count: userCount }));
-        logger.info('User count saved');
     } catch (error) {
         logger.error('Error saving user count:', error);
     }
