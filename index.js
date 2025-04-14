@@ -1144,6 +1144,25 @@ initialize();
 // Save user count periodically
 setInterval(saveUserCount, 100);
 
+const statusMessages = ["📃 Load Info","👁 Watch Discord","tralalelo tralala🔥"];
+const statusTypes = [ 'dnd', 'idle'];
+let currentStatusIndex = 0;
+let currentTypeIndex = 0;
+
+function updateStatus() {
+  const currentStatus = statusMessages[currentStatusIndex];
+  const currentType = statusTypes[currentTypeIndex];
+  client.user.setPresence({
+    activities: [{ name: currentStatus, type: ActivityType.Custom }],
+    status: currentType,
+  });
+  console.log('\x1b[33m[ STATUS ]\x1b[0m', `Updated status to: ${currentStatus} (${currentType})`);
+  currentStatusIndex = (currentStatusIndex + 1) % statusMessages.length;
+  currentTypeIndex = (currentTypeIndex + 1) % statusTypes.length;
+}
+
+setInterval(updateStatus, 10000);
+
 // Clean exit handler
 process.on('SIGINT', async () => {
     logger.info('Shutting down gracefully...');
