@@ -62,7 +62,7 @@ const client = new Client({
 });
 
 // Global variables for user count tracking
-let userCount = 0;
+let userCount = 13282;
 let channelUpdateQueue = [];
 let isUpdatingChannel = false;
 
