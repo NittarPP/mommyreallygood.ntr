@@ -177,5 +177,5 @@ function updateStatus() {
 }
 
 initialize();
-setInterval(saveUserCount, 100);
-setInterval(updateStatus, 10000);
+setInterval(saveUserCount, 1000);
+setInterval(updateStatus, 1000);
