@@ -27,7 +27,7 @@ const client = new Client({
     ]
 });
 
-let userCount = 0;
+let userCount = 19321;
 const channelUpdateQueue = [];
 
 async function loadUserCount() {
@@ -177,5 +177,9 @@ function updateStatus() {
 }
 
 initialize();
-setInterval(saveUserCount, 1000);
-setInterval(updateStatus, 1000);
+
+client.once('ready', () => {
+    logger.info(`Logged in as ${client.user.tag}`);
+    setInterval(saveUserCount, 1000);
+    setInterval(updateStatus, 1000);
+});
