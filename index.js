@@ -181,5 +181,5 @@ initialize();
 client.once('ready', () => {
     logger.info(`Logged in as ${client.user.tag}`);
     setInterval(saveUserCount, 1000);
-    setInterval(updateStatus, 1000);
+    setInterval(updateStatus, 100);
 });
