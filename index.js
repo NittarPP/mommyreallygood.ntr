@@ -159,7 +159,7 @@ async function initialize() {
     }
 }
 
-const statusMessages = ["📜 Load Info","👁 Watch Discord","tralalelo tralala🔥"];
+const statusMessages = ["tralalelo tralala🔥"];
 const statusTypes = [ 'dnd', 'idle'];
 let currentStatusIndex = 0;
 let currentTypeIndex = 0;
