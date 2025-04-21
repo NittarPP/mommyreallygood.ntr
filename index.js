@@ -100,25 +100,6 @@ async function processChannelUpdateQueue(wss) {
     }
 }
 
-async function registerCommands() {
-    const commands = [
-        new SlashCommandBuilder()
-            .setName('ping')
-            .setDescription('Replies with Pong!')
-    ];
-
-    const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-    try {
-        await rest.put(
-            Routes.applicationCommands(process.env.CLIENT_ID),
-            { body: commands.map(cmd => cmd.toJSON()) }
-        );
-        logger.info('Successfully reloaded slash commands');
-    } catch (err) {
-        logger.error('Failed to register commands:', err);
-    }
-}
-
 async function initialize() {
     try {
         await loadUserCount();
@@ -151,7 +132,6 @@ async function initialize() {
             processChannelUpdateQueue(wss);
         }, 100);
 
-        await registerCommands();
         await client.login(process.env.TOKEN);
     } catch (error) {
         logger.error('Initialization error:', error);
